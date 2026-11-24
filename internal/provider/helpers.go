@@ -231,3 +231,12 @@ func stringsFromSet(ctx context.Context, s types.Set, diags *diag.Diagnostics) [
 
 // objectAsOptions reads a possibly null or unknown object into a struct.
 var objectAsOptions = basetypes.ObjectAsOptions{UnhandledNullAsEmpty: true, UnhandledUnknownAsEmpty: true}
+
+// errFromDiags joins the error diagnostics' summaries and details into one error.
+func errFromDiags(d diag.Diagnostics) error {
+	msgs := make([]string, 0, len(d))
+	for _, e := range d.Errors() {
+		msgs = append(msgs, e.Summary()+": "+e.Detail())
+	}
+	return errors.New(strings.Join(msgs, "; "))
+}

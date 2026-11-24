@@ -28,6 +28,7 @@ type fakeExtra struct {
 	access        map[string]*client.ProjectAccess // "<project>/<team>"
 	groups        map[int64]*client.ProjectGroup
 	groupVars     map[int64]map[int64]*fakeGroupVar // group -> variable
+	notifiers     map[int64]*fakeNotifier
 	// callerIP is the address IP access lockout checks compare against.
 	callerIP string
 }
@@ -35,6 +36,24 @@ type fakeExtra struct {
 type fakeGroupVar struct {
 	v     client.ProjectGroupVariable
 	value string
+}
+
+// fakeNotifier is a webhook notification provider with its unmasked secrets.
+type fakeNotifier struct {
+	p       client.NotificationProvider
+	url     string
+	headers map[string]string
+}
+
+// masked is the provider as the server returns it: URL and header values masked.
+func (n *fakeNotifier) masked() client.NotificationProvider {
+	p := n.p
+	p.Config.URL = client.MaskedSecret
+	p.Config.Headers = make(map[string]string, len(n.headers))
+	for k := range n.headers {
+		p.Config.Headers[k] = client.MaskedSecret
+	}
+	return p
 }
 
 type fakeWebhook struct {
@@ -47,7 +66,8 @@ func newFakeExtra() *fakeExtra {
 		customDomains: map[int64]*client.CustomDomain{}, webhooks: map[int64]*fakeWebhook{}, flags: map[string]*client.FeatureFlag{},
 		ipAccess: map[string]*client.IPAccessPolicy{}, crons: map[int64]*client.CronMonitor{}, tokens: map[int64]*client.DeploymentToken{},
 		teams: map[int64]*client.Team{}, access: map[string]*client.ProjectAccess{},
-		groups: map[int64]*client.ProjectGroup{}, groupVars: map[int64]map[int64]*fakeGroupVar{}, callerIP: "127.0.0.1",
+		groups: map[int64]*client.ProjectGroup{}, groupVars: map[int64]map[int64]*fakeGroupVar{},
+		notifiers: map[int64]*fakeNotifier{}, callerIP: "127.0.0.1",
 	}
 }
 
@@ -763,6 +783,81 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 	h("DELETE /api/project-groups/{gid}/env-vars/{vid}", func(w http.ResponseWriter, r *http.Request) {
 		if v := groupVar(w, r); v != nil {
 			delete(x.groupVars[pathID(r, "gid")], v.v.ID)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	// Notification providers: the server masks the URL and every header value,
+	// keeps the stored value for "***" on update, and refuses "***" headers when
+	// the URL changes or for a header it has no value for.
+	notifier := func(w http.ResponseWriter, r *http.Request) *fakeNotifier {
+		n, ok := x.notifiers[pathID(r, "id")]
+		if !ok {
+			notFound(w, "notification provider", r.PathValue("id"))
+			return nil
+		}
+		return n
+	}
+	h("POST /api/notification-providers/webhook", func(w http.ResponseWriter, r *http.Request) {
+		var req client.WebhookNotificationProviderRequest
+		_ = decode(r, &req)
+		if strings.TrimSpace(req.Name) == "" || req.Config.URL == "" || req.Config.URL == client.MaskedSecret {
+			problem(w, 400, "Invalid provider configuration", "name and url are required")
+			return
+		}
+		n := &fakeNotifier{url: req.Config.URL, headers: map[string]string{}}
+		for k, v := range req.Config.Headers {
+			if v == client.MaskedSecret {
+				problem(w, 400, "Invalid masked provider configuration", "headers."+k+" has no existing value")
+				return
+			}
+			n.headers[k] = v
+		}
+		n.p = client.NotificationProvider{ID: f.nextID(), Name: req.Name, ProviderType: "webhook", Enabled: req.Enabled,
+			Config: client.WebhookNotificationConfig{Method: req.Config.Method, TimeoutSecs: req.Config.TimeoutSecs}}
+		x.notifiers[n.p.ID] = n
+		writeJSON(w, 201, n.masked())
+	})
+	h("GET /api/notification-providers/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if n := notifier(w, r); n != nil {
+			writeJSON(w, 200, n.masked())
+		}
+	})
+	h("PUT /api/notification-providers/webhook/{id}", func(w http.ResponseWriter, r *http.Request) {
+		n := notifier(w, r)
+		if n == nil {
+			return
+		}
+		var req client.WebhookNotificationProviderRequest
+		_ = decode(r, &req)
+		urlChanged := req.Config.URL != client.MaskedSecret && req.Config.URL != n.url
+		headers := map[string]string{}
+		for k, v := range req.Config.Headers {
+			if v != client.MaskedSecret {
+				headers[k] = v
+				continue
+			}
+			old, ok := n.headers[k]
+			switch {
+			case urlChanged:
+				problem(w, 400, "Invalid masked provider configuration", "'url' was changed, so the masked value at 'headers."+k+"' must be entered again")
+				return
+			case !ok:
+				problem(w, 400, "Invalid masked provider configuration", "masked value at 'headers."+k+"' has no existing value to preserve")
+				return
+			}
+			headers[k] = old
+		}
+		if req.Config.URL != client.MaskedSecret {
+			n.url = req.Config.URL
+		}
+		n.headers = headers
+		n.p.Name, n.p.Enabled = req.Name, req.Enabled
+		n.p.Config.Method, n.p.Config.TimeoutSecs = req.Config.Method, req.Config.TimeoutSecs
+		writeJSON(w, 200, n.masked())
+	})
+	h("DELETE /api/notification-providers/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if n := notifier(w, r); n != nil {
+			delete(x.notifiers, n.p.ID)
 			w.WriteHeader(http.StatusNoContent)
 		}
 	})

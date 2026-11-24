@@ -149,6 +149,7 @@ func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource 
 		newStatusPageDomainResource,
 		newCustomDomainResource,
 		newWebhookResource,
+		newNotificationProviderResource,
 		newFeatureFlagResource,
 		newFeatureFlagEnvironmentResource,
 		newIPAccessPolicyResource,
