@@ -1,0 +1,1 @@
+terraform import temps_feature_flag_environment.new_checkout_staging 3/new-checkout/5

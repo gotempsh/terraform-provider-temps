@@ -102,3 +102,58 @@ resource "temps_status_page" "public" {
     theme = "auto"
   }
 }
+
+# The domain, the deploy notifications and the scheduled job the app runs.
+resource "temps_custom_domain" "web" {
+  project_id     = temps_project.web.id
+  environment_id = data.temps_environment.production.id
+  domain         = var.domain
+}
+
+resource "temps_webhook" "deploys" {
+  project_id = temps_project.web.id
+  url        = var.webhook_url
+  events     = ["deployment.succeeded", "deployment.failed"]
+}
+
+resource "temps_cron_monitor" "nightly_report" {
+  project_id = temps_project.web.id
+  slug       = "nightly-report"
+  schedule   = { crontab = "0 3 * * *" }
+}
+
+# A feature flag that is on in staging only.
+resource "temps_feature_flag" "new_checkout" {
+  project_id    = temps_project.web.id
+  key           = "new-checkout"
+  value_type    = "bool"
+  default_value = jsonencode(false)
+}
+
+resource "temps_feature_flag_environment" "new_checkout_staging" {
+  project_id     = temps_project.web.id
+  key            = temps_feature_flag.new_checkout.key
+  environment_id = temps_environment.staging.id
+  value          = jsonencode(true)
+}
+
+# Staging is reachable from the office network only.
+resource "temps_ip_access_policy" "staging" {
+  project_id          = temps_project.web.id
+  environment_id      = temps_environment.staging.id
+  mode                = "allow"
+  cidrs               = [for c in var.office_cidrs : { cidr = c, description = "Office" }]
+  acknowledge_lockout = var.terraform_runs_outside_office
+}
+
+# The platform team deploys the project.
+resource "temps_team" "platform" {
+  name = "Platform"
+  slug = "platform"
+}
+
+resource "temps_project_access" "platform_web" {
+  project_id = temps_project.web.id
+  team_id    = temps_team.platform.id
+  role       = "deployer"
+}

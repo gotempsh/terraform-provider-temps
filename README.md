@@ -7,7 +7,9 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 Describe a [Temps](https://github.com/gotempsh/temps) installation as code:
 projects with environments and variables, managed databases linked to projects,
-backup destinations and schedules, and uptime monitors with public status pages.
+backup destinations and schedules, uptime and cron monitors with public status
+pages, custom domains, webhooks, feature flags, IP access policies, deployment
+tokens, and teams with project access.
 `plan` shows changes, `apply` makes them, `import` adopts existing objects, and a
 second `plan` after `apply` reports no changes.
 
@@ -20,6 +22,10 @@ reference documentation for every resource and data source is in [`docs/`](docs)
 | `temps_service`, `temps_service_link` | `temps_environment` |
 | `temps_backup_destination`, `temps_backup_schedule` | `temps_service`, `temps_service_types` |
 | `temps_monitor`, `temps_status_page`, `temps_status_page_domain` | `temps_service_connection` |
+| `temps_custom_domain`, `temps_webhook`, `temps_cron_monitor` | `temps_webhook_event_types` |
+| `temps_feature_flag`, `temps_feature_flag_environment` | |
+| `temps_ip_access_policy`, `temps_deployment_token` | |
+| `temps_team`, `temps_project_access` | |
 
 ## Requirements
 
