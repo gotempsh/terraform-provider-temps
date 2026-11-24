@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2024-2026 Temps Contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # One job: vet, lint, unit tests (an in-memory Temps fake driven by a real
+  # Terraform CLI) and a check that the generated docs are up to date.
+  # Acceptance tests need a running Temps server and run locally (see README).
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "~1.17.0"
+          terraform_wrapper: false
+
+      - name: go mod tidy is clean
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+
+      - name: Unit tests
+        run: go test ./... -count=1 -race -timeout 15m
+
+      - name: Docs are up to date
+        run: |
+          go generate ./...
+          git diff --exit-code -- docs examples
+          test -z "$(git status --porcelain -- docs)"
+          go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.25.0 validate --provider-name temps
+
+      - name: Examples are formatted
+        run: terraform fmt -check -recursive examples
