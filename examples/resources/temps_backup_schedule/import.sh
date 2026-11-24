@@ -1,0 +1,1 @@
+terraform import temps_backup_schedule.nightly 5
