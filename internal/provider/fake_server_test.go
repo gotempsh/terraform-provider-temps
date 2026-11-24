@@ -46,6 +46,8 @@ type fakeTemps struct {
 	noPagePasswd bool                   // simulate a server without the password endpoint
 	requests     []string
 
+	x *fakeExtra // resources added after the first release
+
 	// s3Creating counts S3 source creations in flight. Like Temps, two that
 	// overlap while no default exists race for it and one fails with a 500.
 	s3Creating atomic.Int32
@@ -98,7 +100,7 @@ func newFakeTemps(t *testing.T) *fakeTemps {
 		vars: map[int64]*fakeVar{}, services: map[int64]*fakeService{}, links: map[int64]*client.ServiceLink{},
 		sources: map[int64]*fakeSource{}, backups: map[string]int64{}, schedules: map[int64]*fakeSchedule{},
 		monitors: map[int64]*client.Monitor{}, pages: map[int64]*fakePage{}, domains: map[int64]*fakeDomain{},
-		failures: map[string]fakeFailure{},
+		failures: map[string]fakeFailure{}, x: newFakeExtra(),
 	}
 	f.srv = httptest.NewServer(f.routes())
 	t.Cleanup(f.srv.Close)
@@ -1133,6 +1135,7 @@ func (f *fakeTemps) routes() http.Handler {
 		delete(f.domains, pathID(r, "did"))
 		w.WriteHeader(http.StatusNoContent)
 	})
+	f.extraRoutes(h)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/projects/by-slug/") {
 			slugMux.ServeHTTP(w, r)

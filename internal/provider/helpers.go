@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 
 	"github.com/gotempsh/terraform-provider-temps/internal/client"
 )
@@ -210,3 +211,23 @@ func (e withHint) Unwrap() error { return e.err }
 var pollInterval = 3 * time.Second
 
 func asAPIError(err error, target **client.APIError) bool { return errors.As(err, target) }
+
+func stringSetValue(vals []string) types.Set {
+	elems := make([]attr.Value, len(vals))
+	for i, v := range vals {
+		elems[i] = types.StringValue(v)
+	}
+	return types.SetValueMust(types.StringType, elems)
+}
+
+func stringsFromSet(ctx context.Context, s types.Set, diags *diag.Diagnostics) []string {
+	if !known(s) {
+		return nil
+	}
+	out := []string{}
+	diags.Append(s.ElementsAs(ctx, &out, false)...)
+	return out
+}
+
+// objectAsOptions reads a possibly null or unknown object into a struct.
+var objectAsOptions = basetypes.ObjectAsOptions{UnhandledNullAsEmpty: true, UnhandledUnknownAsEmpty: true}

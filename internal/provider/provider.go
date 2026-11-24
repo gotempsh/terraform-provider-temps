@@ -147,6 +147,15 @@ func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource 
 		newMonitorResource,
 		newStatusPageResource,
 		newStatusPageDomainResource,
+		newCustomDomainResource,
+		newWebhookResource,
+		newFeatureFlagResource,
+		newFeatureFlagEnvironmentResource,
+		newIPAccessPolicyResource,
+		newCronMonitorResource,
+		newDeploymentTokenResource,
+		newTeamResource,
+		newProjectAccessResource,
 	}
 }
 
@@ -157,5 +166,6 @@ func (p *tempsProvider) DataSources(_ context.Context) []func() datasource.DataS
 		newServiceDataSource,
 		newServiceTypesDataSource,
 		newServiceConnectionDataSource,
+		newWebhookEventTypesDataSource,
 	}
 }

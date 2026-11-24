@@ -355,3 +355,48 @@ func (d *serviceConnectionDataSource) Read(ctx context.Context, req datasource.R
 	cfg.Variables = types.MapValueMust(types.StringType, vals)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &cfg)...)
 }
+
+// ----------------------------------------------------- temps_webhook_event_types
+
+type webhookEventTypesDataSource struct{ dataSourceBase }
+
+func newWebhookEventTypesDataSource() datasource.DataSource { return &webhookEventTypesDataSource{} }
+
+type webhookEventTypesModel struct {
+	ID         types.String `tfsdk:"id"`
+	EventTypes types.List   `tfsdk:"event_types"`
+	Categories types.Map    `tfsdk:"categories"`
+}
+
+func (d *webhookEventTypesDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_webhook_event_types"
+}
+
+func (d *webhookEventTypesDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		MarkdownDescription: "Lists the events a `temps_webhook` can subscribe to. Needs the `webhooks:read` permission.",
+		Attributes: map[string]schema.Attribute{
+			"id":          schema.StringAttribute{Computed: true, MarkdownDescription: "Always `webhook_event_types`."},
+			"event_types": schema.ListAttribute{Computed: true, ElementType: types.StringType, MarkdownDescription: "Event type names, for example `deployment.succeeded`."},
+			"categories": schema.MapAttribute{Computed: true, ElementType: types.StringType,
+				MarkdownDescription: "Event type name to its category, for example `Deployment`."},
+		},
+	}
+}
+
+func (d *webhookEventTypesDataSource) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
+	ets, err := d.client.ListWebhookEventTypes(ctx)
+	if err != nil {
+		addAPIError(&resp.Diagnostics, "Unable to list Temps webhook event types", err, []string{"webhooks:read"})
+		return
+	}
+	names := make([]string, len(ets))
+	cats := map[string]attr.Value{}
+	for i, e := range ets {
+		names[i] = e.EventType
+		cats[e.EventType] = types.StringValue(e.Category)
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &webhookEventTypesModel{
+		ID: types.StringValue("webhook_event_types"), EventTypes: stringListValue(names), Categories: types.MapValueMust(types.StringType, cats),
+	})...)
+}
