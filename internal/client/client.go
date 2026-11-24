@@ -358,3 +358,9 @@ func idPath(format string, ids ...int64) string {
 	}
 	return fmt.Sprintf(format, args...)
 }
+
+// notFoundError is the 404 a lookup by listing returns when nothing matches,
+// so callers treat it like a missing object from a single-object GET.
+func notFoundError(method, path, detail string) *APIError {
+	return &APIError{StatusCode: http.StatusNotFound, Method: method, Path: path, Title: "Not Found", Detail: detail}
+}
