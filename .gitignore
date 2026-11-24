@@ -1,0 +1,17 @@
+# Terraform state, working directories and CLI configuration
+*.tfstate*
+.terraform/
+.terraform.lock.hcl
+*.tfrc
+.terraformrc
+*.tfvars
+!examples/**/*.tfvars.example
+
+# Build output
+terraform-provider-temps
+/bin/
+dist/
+
+# Local environment
+.env
+*.log
