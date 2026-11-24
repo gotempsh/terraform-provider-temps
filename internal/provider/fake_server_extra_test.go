@@ -26,8 +26,15 @@ type fakeExtra struct {
 	tokens        map[int64]*client.DeploymentToken
 	teams         map[int64]*client.Team
 	access        map[string]*client.ProjectAccess // "<project>/<team>"
+	groups        map[int64]*client.ProjectGroup
+	groupVars     map[int64]map[int64]*fakeGroupVar // group -> variable
 	// callerIP is the address IP access lockout checks compare against.
 	callerIP string
+}
+
+type fakeGroupVar struct {
+	v     client.ProjectGroupVariable
+	value string
 }
 
 type fakeWebhook struct {
@@ -39,7 +46,8 @@ func newFakeExtra() *fakeExtra {
 	return &fakeExtra{
 		customDomains: map[int64]*client.CustomDomain{}, webhooks: map[int64]*fakeWebhook{}, flags: map[string]*client.FeatureFlag{},
 		ipAccess: map[string]*client.IPAccessPolicy{}, crons: map[int64]*client.CronMonitor{}, tokens: map[int64]*client.DeploymentToken{},
-		teams: map[int64]*client.Team{}, access: map[string]*client.ProjectAccess{}, callerIP: "127.0.0.1",
+		teams: map[int64]*client.Team{}, access: map[string]*client.ProjectAccess{},
+		groups: map[int64]*client.ProjectGroup{}, groupVars: map[int64]map[int64]*fakeGroupVar{}, callerIP: "127.0.0.1",
 	}
 }
 
@@ -574,7 +582,194 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 		delete(x.access, k)
 		w.WriteHeader(http.StatusNoContent)
 	})
+
+	// ------------------------------------------------------- project groups
+	h("POST /api/project-groups", func(w http.ResponseWriter, r *http.Request) {
+		var req client.ProjectGroupRequest
+		_ = decode(r, &req)
+		if req.Name == nil || *req.Name == "" {
+			problem(w, 400, "Validation Error", "name must not be empty")
+			return
+		}
+		slug := strings.ToLower(*req.Name)
+		if req.Slug != nil {
+			slug = *req.Slug
+		}
+		for _, g := range x.groups {
+			if g.Slug == slug {
+				problem(w, 409, "Resource Conflict", "Project group slug '"+slug+"' is already taken")
+				return
+			}
+		}
+		g := &client.ProjectGroup{ID: f.nextID(), Name: *req.Name, Slug: slug, Description: req.Description, Projects: []client.ProjectGroupMember{}}
+		x.groups[g.ID] = g
+		x.groupVars[g.ID] = map[int64]*fakeGroupVar{}
+		writeJSON(w, 201, g)
+	})
+	h("GET /api/project-groups", func(w http.ResponseWriter, r *http.Request) {
+		out := []client.ProjectGroup{}
+		for _, g := range x.groups {
+			out = append(out, *g)
+		}
+		writeJSON(w, 200, map[string]any{"groups": out, "total": len(out), "page_size": 100})
+	})
+	group := func(w http.ResponseWriter, r *http.Request) *client.ProjectGroup {
+		g, ok := x.groups[pathID(r, "gid")]
+		if !ok {
+			notFound(w, "project group", r.PathValue("gid"))
+			return nil
+		}
+		return g
+	}
+	h("GET /api/project-groups/by-slug/{slug}", func(w http.ResponseWriter, r *http.Request) {
+		for _, g := range x.groups {
+			if g.Slug == r.PathValue("slug") {
+				writeJSON(w, 200, g)
+				return
+			}
+		}
+		notFound(w, "project group", r.PathValue("slug"))
+	})
+	h("GET /api/project-groups/{gid}", func(w http.ResponseWriter, r *http.Request) {
+		if g := group(w, r); g != nil {
+			writeJSON(w, 200, g)
+		}
+	})
+	h("PATCH /api/project-groups/{gid}", func(w http.ResponseWriter, r *http.Request) {
+		g := group(w, r)
+		if g == nil {
+			return
+		}
+		var req client.ProjectGroupRequest
+		_ = decode(r, &req)
+		if req.Name != nil {
+			g.Name = *req.Name
+		}
+		if req.Slug != nil {
+			g.Slug = *req.Slug
+		}
+		if req.Description != nil { // null keeps; "" clears
+			g.Description = req.Description
+			if *req.Description == "" {
+				g.Description = nil
+			}
+		}
+		writeJSON(w, 200, g)
+	})
+	h("DELETE /api/project-groups/{gid}", func(w http.ResponseWriter, r *http.Request) {
+		if g := group(w, r); g != nil {
+			delete(x.groups, g.ID)
+			delete(x.groupVars, g.ID)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	h("PUT /api/project-groups/{gid}/projects/{pid}", func(w http.ResponseWriter, r *http.Request) {
+		g := group(w, r)
+		if g == nil {
+			return
+		}
+		pid, ok := project(w, r)
+		if !ok {
+			return
+		}
+		for _, o := range x.groups { // Temps moves the project silently
+			o.Projects = slices.DeleteFunc(o.Projects, func(m client.ProjectGroupMember) bool { return m.ID == pid })
+		}
+		p := f.projects[pid]
+		g.Projects = append(g.Projects, client.ProjectGroupMember{ID: pid, Name: p.Name, Slug: p.Slug})
+		writeJSON(w, 200, g)
+	})
+	h("DELETE /api/project-groups/{gid}/projects/{pid}", func(w http.ResponseWriter, r *http.Request) {
+		g := group(w, r)
+		if g == nil {
+			return
+		}
+		pid := pathID(r, "pid")
+		if !g.HasProject(pid) {
+			problem(w, 404, "Resource Not Found", "Project "+r.PathValue("pid")+" is not in project group "+r.PathValue("gid"))
+			return
+		}
+		g.Projects = slices.DeleteFunc(g.Projects, func(m client.ProjectGroupMember) bool { return m.ID == pid })
+		w.WriteHeader(http.StatusNoContent)
+	})
+	view := func(v *fakeGroupVar) client.ProjectGroupVariable {
+		out := v.v
+		if !out.IsSecret {
+			out.Value = ptr(v.value)
+		}
+		return out
+	}
+	h("GET /api/project-groups/{gid}/env-vars", func(w http.ResponseWriter, r *http.Request) {
+		g := group(w, r)
+		if g == nil {
+			return
+		}
+		// Like the real API, a list masks every value: plain ones as ***,
+		// secrets as null.
+		out := []client.ProjectGroupVariable{}
+		for _, v := range x.groupVars[g.ID] {
+			o := view(v)
+			if o.Value != nil {
+				o.Value = ptr("***")
+			}
+			out = append(out, o)
+		}
+		writeJSON(w, 200, out)
+	})
+	h("POST /api/project-groups/{gid}/env-vars", func(w http.ResponseWriter, r *http.Request) {
+		g := group(w, r)
+		if g == nil {
+			return
+		}
+		var req client.CreateProjectGroupVariableRequest
+		_ = decode(r, &req)
+		for _, v := range x.groupVars[g.ID] {
+			if v.v.Key == req.Key && ptrEq(v.v.EnvironmentSlug, req.EnvironmentSlug) {
+				problem(w, 409, "Resource Conflict", "Variable '"+req.Key+"' already exists in project group "+r.PathValue("gid"))
+				return
+			}
+		}
+		v := &fakeGroupVar{v: client.ProjectGroupVariable{ID: f.nextID(), Key: req.Key, EnvironmentSlug: req.EnvironmentSlug, IncludeInPreview: req.IncludeInPreview, IsSecret: req.IsSecret}, value: req.Value}
+		x.groupVars[g.ID][v.v.ID] = v
+		writeJSON(w, 201, view(v))
+	})
+	groupVar := func(w http.ResponseWriter, r *http.Request) *fakeGroupVar {
+		if g := group(w, r); g != nil {
+			if v, ok := x.groupVars[g.ID][pathID(r, "vid")]; ok {
+				return v
+			}
+			notFound(w, "project group variable", r.PathValue("vid"))
+		}
+		return nil
+	}
+	h("PATCH /api/project-groups/{gid}/env-vars/{vid}", func(w http.ResponseWriter, r *http.Request) {
+		v := groupVar(w, r)
+		if v == nil {
+			return
+		}
+		var req client.UpdateProjectGroupVariableRequest
+		_ = decode(r, &req)
+		if req.Value != nil {
+			v.value = *req.Value
+		}
+		if req.IncludeInPreview != nil {
+			v.v.IncludeInPreview = *req.IncludeInPreview
+		}
+		if req.IsSecret != nil {
+			v.v.IsSecret = *req.IsSecret
+		}
+		writeJSON(w, 200, view(v))
+	})
+	h("DELETE /api/project-groups/{gid}/env-vars/{vid}", func(w http.ResponseWriter, r *http.Request) {
+		if v := groupVar(w, r); v != nil {
+			delete(x.groupVars[pathID(r, "gid")], v.v.ID)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
 }
+
+// ptrEq compares two optional strings.
+func ptrEq(a, b *string) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
 
 // reencode normalises JSON the way the server does (sorted keys, shortest numbers).
 func reencode(raw json.RawMessage) json.RawMessage {

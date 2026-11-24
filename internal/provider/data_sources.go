@@ -400,3 +400,76 @@ func (d *webhookEventTypesDataSource) Read(ctx context.Context, _ datasource.Rea
 		ID: types.StringValue("webhook_event_types"), EventTypes: stringListValue(names), Categories: types.MapValueMust(types.StringType, cats),
 	})...)
 }
+
+// ---------------------------------------------------------- temps_project_group
+
+type projectGroupDataSource struct{ dataSourceBase }
+
+func newProjectGroupDataSource() datasource.DataSource { return &projectGroupDataSource{} }
+
+type projectGroupDataModel struct {
+	ID          types.String `tfsdk:"id"`
+	Slug        types.String `tfsdk:"slug"`
+	Name        types.String `tfsdk:"name"`
+	Description types.String `tfsdk:"description"`
+	ProjectIDs  types.Set    `tfsdk:"project_ids"`
+}
+
+func (d *projectGroupDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_project_group"
+}
+
+func (d *projectGroupDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		MarkdownDescription: "Looks up a project group by `id` or `slug`, with the projects in it. Needs the `projects:read` permission.",
+		Attributes: map[string]schema.Attribute{
+			"id":          schema.StringAttribute{Optional: true, Computed: true, MarkdownDescription: "Numeric project group ID."},
+			"slug":        schema.StringAttribute{Optional: true, Computed: true, MarkdownDescription: "Project group slug."},
+			"name":        schema.StringAttribute{Computed: true, MarkdownDescription: "Project group name."},
+			"description": schema.StringAttribute{Computed: true, MarkdownDescription: "Description, null when none is set."},
+			"project_ids": schema.SetAttribute{Computed: true, ElementType: types.Int64Type, MarkdownDescription: "IDs of the projects in the group."},
+		},
+	}
+}
+
+func (d *projectGroupDataSource) ConfigValidators(context.Context) []datasource.ConfigValidator {
+	return []datasource.ConfigValidator{datasourcevalidator.ExactlyOneOf(path.MatchRoot("id"), path.MatchRoot("slug"))}
+}
+
+func (d *projectGroupDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var cfg projectGroupDataModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	var g *client.ProjectGroup
+	var err error
+	if known(cfg.ID) {
+		id, perr := parseID(cfg.ID.ValueString())
+		if perr != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("id"), "Invalid project group ID", perr.Error())
+			return
+		}
+		g, err = d.client.GetProjectGroup(ctx, id)
+	} else {
+		g, err = d.client.GetProjectGroupBySlug(ctx, cfg.Slug.ValueString())
+	}
+	if err != nil {
+		addAPIError(&resp.Diagnostics, "Unable to read Temps project group", err, []string{"projects:read"})
+		return
+	}
+	ids := make([]int64, 0, len(g.Projects))
+	for _, p := range g.Projects {
+		ids = append(ids, p.ID)
+	}
+	slices.Sort(ids)
+	cfg.ID = types.StringValue(formatID(g.ID))
+	cfg.Slug = types.StringValue(g.Slug)
+	cfg.Name = types.StringValue(g.Name)
+	cfg.Description = types.StringNull()
+	if g.Description != nil && *g.Description != "" {
+		cfg.Description = types.StringValue(*g.Description)
+	}
+	cfg.ProjectIDs = int64SetValue(ids)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &cfg)...)
+}

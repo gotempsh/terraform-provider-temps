@@ -1137,7 +1137,7 @@ func (f *fakeTemps) routes() http.Handler {
 	})
 	f.extraRoutes(h)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/projects/by-slug/") {
+		if strings.Contains(r.URL.Path, "/by-slug/") {
 			slugMux.ServeHTTP(w, r)
 			return
 		}
