@@ -603,6 +603,26 @@ func TestGenericClearWithSendsEmptyString(t *testing.T) {
 	}
 }
 
+func TestGenericClearWithReadsEmptyAsUnset(t *testing.T) {
+	r := &genericResource{s: &gspec{Name: "thing", Fields: []gfield{
+		{Name: "description", Kind: kString, Clearable: true, ClearWith: ""},
+		{Name: "note", Kind: kString, Clearable: true},
+	}}}
+	v := gvals{"description": types.StringValue("old"), "note": types.StringValue("old")}
+	var diags diag.Diagnostics
+	r.apply(v, map[string]any{"description": "", "note": ""}, &diags)
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	if !v["description"].IsNull() {
+		t.Fatalf("description = %v, want null", v["description"])
+	}
+	// Without ClearWith an empty string is a value like any other.
+	if got := v["note"].(types.String).ValueString(); got != "" || v["note"].IsNull() {
+		t.Fatalf("note = %v, want \"\"", v["note"])
+	}
+}
+
 func TestErrorSpecsNormalizeServerKeys(t *testing.T) {
 	rules := map[string]any{"data": []any{map[string]any{
 		"id": 7.0, "position": 0.0, "owner_name": "Admin", "created_at": "x", "updated_at": "x",

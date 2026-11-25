@@ -178,7 +178,7 @@ var mcpServerSpec = &gspec{
 	Fields: []gfield{
 		{Name: "slug", Kind: kString, Required: true, CreateOnly: true, Desc: "Identifier of the server."},
 		{Name: "name", Kind: kString, Required: true, Desc: "Name shown in the console."},
-		{Name: "description", Kind: kString, Clearable: true, Desc: "What the server provides."},
+		{Name: "description", Kind: kString, Clearable: true, ClearWith: "", Desc: "What the server provides."},
 		{Name: "config", Kind: kJSON, Required: true, Sensitive: true, Subset: true,
 			Desc: "Server configuration: `command` and `args` for a local server, or `url` and `headers` for a remote one."},
 	},
@@ -196,7 +196,7 @@ var skillSpec = &gspec{
 	Fields: []gfield{
 		{Name: "slug", Kind: kString, Required: true, CreateOnly: true, Desc: "Identifier of the skill."},
 		{Name: "name", Kind: kString, Required: true, Desc: "Name of the skill."},
-		{Name: "description", Kind: kString, Clearable: true, Desc: "When an agent should use it."},
+		{Name: "description", Kind: kString, Clearable: true, ClearWith: "", Desc: "When an agent should use it."},
 		{Name: "content", Kind: kString, Required: true, Desc: "The skill's Markdown."},
 		{Name: "has_archive", Kind: kBool, Computed: true, Desc: "Whether supporting files were uploaded with it."},
 	},

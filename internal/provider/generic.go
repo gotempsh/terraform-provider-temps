@@ -81,7 +81,7 @@ type gfield struct {
 	Clearable bool
 	// ClearWith is sent instead of null when a Clearable value is removed,
 	// for PATCH endpoints where null means "unchanged" and an empty string
-	// clears.
+	// clears. With "", an empty string read back is also treated as unset.
 	ClearWith any
 	Sensitive bool
 	ForceNew  bool
@@ -1014,6 +1014,10 @@ func (r *genericResource) apply(v gvals, obj map[string]any, diags *diag.Diagnos
 		raw, ok := getPath(obj, f.readKey())
 		if !ok {
 			continue
+		}
+		// A field cleared by sending "" may come back as "": it is unset.
+		if s, isStr := raw.(string); isStr && s == "" && f.ClearWith == "" {
+			raw = nil
 		}
 		nv, err := fromJSON(f, raw, v[f.Name])
 		if err != nil {
