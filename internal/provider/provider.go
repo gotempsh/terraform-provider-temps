@@ -136,7 +136,7 @@ func (p *tempsProvider) Configure(ctx context.Context, req provider.ConfigureReq
 }
 
 func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource {
-	return []func() resource.Resource{
+	rs := []func() resource.Resource{
 		newProjectResource,
 		newEnvironmentResource,
 		newEnvironmentVariableResource,
@@ -167,6 +167,64 @@ func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource 
 		newAPIKeyResource,
 		newInboundFilterResource,
 	}
+	for _, s := range genericSpecs {
+		rs = append(rs, genericFactory(s))
+	}
+	return rs
+}
+
+// genericSpecs are the resources the spec-driven engine (generic.go) serves.
+var genericSpecs = []*gspec{
+	userSpec,
+	userRoleSpec,
+	oidcProviderSpec,
+	oidcRoleMappingSpec,
+	gitProviderSpec,
+	settingsSpec,
+	globalSecretSpec,
+	globalIPRuleSpec,
+	dnsProviderSpec,
+	dnsProviderDomainSpec,
+	domainSpec,
+	emailProviderSpec,
+	emailDomainSpec,
+	emailDomainProjectSpec,
+	environmentDomainSpec,
+	environmentIngressSpec,
+	runtimeHealthSpec,
+	internalAccessSpec,
+	shieldEntrySpec,
+	shieldTokenSpec,
+	shieldSettingsSpec,
+	httpCheckSpec,
+	aiProviderSpec,
+	aiProviderModelSpec,
+	aiInstanceLimitsSpec,
+	aiProjectLimitsSpec,
+	projectAgentSpec,
+	mcpServerSpec,
+	skillSpec,
+	accessServiceSpec,
+	accessVaultSpec,
+	accessBundleSpec,
+	ingressConnectorSpec,
+	lbRouteSpec,
+	networkPolicyRuleSpec,
+	deliveryProfileSpec,
+	projectDeliverySettingsSpec,
+	clusterNetworkSpec,
+	wireguardMeshSpec,
+	nodeBuildLimitsSpec,
+	nodeResourcesSpec,
+	workloadVolumeSpec,
+	workloadVolumeAttachmentSpec,
+	sandboxPlacementSpec,
+	kvSpec,
+	kvSettingsSpec,
+	blobSpec,
+	blobSettingsSpec,
+	previewGatewaySpec,
+	notificationPreferencesSpec,
 }
 
 func (p *tempsProvider) DataSources(_ context.Context) []func() datasource.DataSource {

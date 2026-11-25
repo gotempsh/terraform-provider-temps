@@ -235,6 +235,11 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			if len(bytes.TrimSpace(body)) == 0 {
 				return nil
 			}
+			// Some endpoints acknowledge with a plain-text sentence ("Role
+			// assigned successfully"): there is nothing to decode.
+			if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/") && !json.Valid(body) {
+				return nil
+			}
 			if err := json.Unmarshal(body, out); err != nil {
 				return fmt.Errorf("%s %s: decoding response: %w", method, path, err)
 			}

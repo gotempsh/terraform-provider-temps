@@ -6,26 +6,29 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 # Terraform provider for Temps
 
 Describe a [Temps](https://github.com/gotempsh/temps) installation as code:
-projects with environments and variables, managed databases linked to projects,
-backup destinations and schedules, uptime and cron monitors with public status
-pages, custom domains, webhooks, feature flags, IP access policies, deployment
-tokens, and teams with project access.
+projects with environments and variables, managed databases and backups,
+monitors, status pages and alerts, domains, DNS and email, traffic and security
+rules, users, single sign-on and Git connections, the AI gateway, and instance and
+cluster settings.
 `plan` shows changes, `apply` makes them, `import` adopts existing objects, and a
 second `plan` after `apply` reports no changes.
 
 The design and its scope are in [`docs/PLAN.md`](docs/PLAN.md). Generated
 reference documentation for every resource and data source is in [`docs/`](docs).
 
-| Resources | Data sources |
+| Area | Resources |
 |---|---|
-| `temps_project`, `temps_environment`, `temps_environment_variable` | `temps_project` |
-| `temps_service`, `temps_service_link` | `temps_environment` |
-| `temps_backup_destination`, `temps_backup_schedule` | `temps_service`, `temps_service_types` |
-| `temps_monitor`, `temps_status_page`, `temps_status_page_domain` | `temps_service_connection` |
-| `temps_custom_domain`, `temps_webhook`, `temps_cron_monitor` | `temps_webhook_event_types` |
-| `temps_feature_flag`, `temps_feature_flag_environment` | |
-| `temps_ip_access_policy`, `temps_deployment_token` | |
-| `temps_team`, `temps_project_access` | |
+| Projects | `temps_project`, `temps_environment`, `temps_environment_variable`, `temps_project_secret`, `temps_project_group`, `temps_project_group_membership`, `temps_project_group_variable`, `temps_project_access`, `temps_project_internal_access`, `temps_team` |
+| Environments | `temps_environment_domain`, `temps_environment_ingress`, `temps_environment_runtime_health`, `temps_workload_volume`, `temps_workload_volume_attachment` |
+| Databases and backups | `temps_service`, `temps_service_link`, `temps_backup_destination`, `temps_backup_schedule`, `temps_kv`, `temps_kv_settings`, `temps_blob`, `temps_blob_settings` |
+| Monitoring and alerts | `temps_monitor`, `temps_cron_monitor`, `temps_http_check`, `temps_status_page`, `temps_status_page_domain`, `temps_error_alert_rule`, `temps_error_inbound_filter`, `temps_notification_provider`, `temps_notification_route`, `temps_notification_preferences`, `temps_webhook` |
+| Domains, DNS and email | `temps_custom_domain`, `temps_domain`, `temps_dns_provider`, `temps_dns_provider_domain`, `temps_email_provider`, `temps_email_domain`, `temps_email_domain_project` |
+| Traffic and security | `temps_ip_access_policy`, `temps_global_ip_access_rule`, `temps_edge_rule`, `temps_shield_entry`, `temps_shield_token`, `temps_shield_settings`, `temps_load_balancer_route`, `temps_ingress_connector`, `temps_network_policy_rule`, `temps_delivery_profile`, `temps_project_delivery_settings` |
+| Identity and access | `temps_user`, `temps_user_role`, `temps_oidc_provider`, `temps_oidc_role_mapping`, `temps_api_key`, `temps_deployment_token`, `temps_git_provider`, `temps_global_secret`, `temps_access_service`, `temps_access_vault`, `temps_access_bundle` |
+| AI | `temps_ai_provider`, `temps_ai_provider_model`, `temps_ai_instance_limits`, `temps_ai_project_limits`, `temps_project_agent`, `temps_mcp_server`, `temps_skill` |
+| Instance and cluster | `temps_settings`, `temps_feature_flag`, `temps_feature_flag_environment`, `temps_cluster_network`, `temps_wireguard_mesh`, `temps_node_build_limits`, `temps_node_resources`, `temps_sandbox_placement`, `temps_preview_gateway_settings` |
+
+Data sources: `temps_environment`, `temps_project`, `temps_project_group`, `temps_service`, `temps_service_connection`, `temps_service_types`, `temps_webhook_event_types`.
 
 ## Requirements
 
