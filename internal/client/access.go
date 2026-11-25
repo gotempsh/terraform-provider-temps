@@ -194,3 +194,60 @@ func (c *Client) GrantProjectAccess(ctx context.Context, projectID, teamID int64
 func (c *Client) RevokeProjectAccess(ctx context.Context, projectID, teamID int64) error {
 	return c.do(ctx, http.MethodDelete, idPath("/projects/%d/access/%d", projectID, teamID), nil, nil, nil)
 }
+
+// APIKey is a Temps API key. Its value is returned only when it is created.
+type APIKey struct {
+	ID            int64     `json:"id"`
+	Name          string    `json:"name"`
+	KeyPrefix     string    `json:"key_prefix"`
+	RoleType      string    `json:"role_type"`
+	Permissions   *[]string `json:"permissions"`
+	ProjectID     *int64    `json:"project_id"`
+	EnvironmentID *int64    `json:"environment_id"`
+	IsActive      *bool     `json:"is_active"`
+	ExpiresAt     *string   `json:"expires_at"`
+	// APIKey is only returned when the key is created.
+	APIKey string `json:"api_key,omitempty"`
+}
+
+// CreateAPIKeyRequest is the body of POST /api-keys. Without expires_at
+// Temps sets an expiry one year ahead.
+type CreateAPIKeyRequest struct {
+	Name          string    `json:"name"`
+	RoleType      string    `json:"role_type"`
+	Permissions   *[]string `json:"permissions,omitempty"`
+	ProjectID     *int64    `json:"project_id,omitempty"`
+	EnvironmentID *int64    `json:"environment_id,omitempty"`
+	ExpiresAt     *string   `json:"expires_at,omitempty"`
+}
+
+// UpdateAPIKeyRequest is the body of PATCH /api-keys/{id}. Temps ignores
+// permissions on update, so the client does not send them.
+type UpdateAPIKeyRequest struct {
+	Name      *string `json:"name,omitempty"`
+	IsActive  *bool   `json:"is_active,omitempty"`
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
+// CreateAPIKey mints an API key; the response carries the key value once.
+func (c *Client) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (*APIKey, error) {
+	var k APIKey
+	return &k, c.do(ctx, http.MethodPost, "/api-keys", nil, req, &k)
+}
+
+// GetAPIKey reads an API key (without its value).
+func (c *Client) GetAPIKey(ctx context.Context, id int64) (*APIKey, error) {
+	var k APIKey
+	return &k, c.do(ctx, http.MethodGet, idPath("/api-keys/%d", id), nil, nil, &k)
+}
+
+// UpdateAPIKey partially updates an API key.
+func (c *Client) UpdateAPIKey(ctx context.Context, id int64, req UpdateAPIKeyRequest) (*APIKey, error) {
+	var k APIKey
+	return &k, c.do(ctx, http.MethodPatch, idPath("/api-keys/%d", id), nil, req, &k)
+}
+
+// DeleteAPIKey revokes an API key.
+func (c *Client) DeleteAPIKey(ctx context.Context, id int64) error {
+	return c.do(ctx, http.MethodDelete, idPath("/api-keys/%d", id), nil, nil, nil)
+}

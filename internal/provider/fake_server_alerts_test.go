@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gotempsh/terraform-provider-temps/internal/client"
 )
@@ -20,6 +21,7 @@ type fakeAlerts struct {
 	routes  map[int64]*client.NotificationRoute
 	rules   map[int64]*client.ErrorAlertRule
 	edges   map[int64]*client.EdgeRule
+	apiKeys map[int64]*client.APIKey
 	// seeded records which projects already got their default alert rules.
 	seeded map[int64]bool
 }
@@ -31,7 +33,7 @@ type fakeSecret struct {
 
 func newFakeAlerts() *fakeAlerts {
 	return &fakeAlerts{secrets: map[int64]*fakeSecret{}, routes: map[int64]*client.NotificationRoute{},
-		rules: map[int64]*client.ErrorAlertRule{}, edges: map[int64]*client.EdgeRule{}, seeded: map[int64]bool{}}
+		rules: map[int64]*client.ErrorAlertRule{}, edges: map[int64]*client.EdgeRule{}, apiKeys: map[int64]*client.APIKey{}, seeded: map[int64]bool{}}
 }
 
 func (f *fakeTemps) alertRoutes(h func(string, func(http.ResponseWriter, *http.Request))) {
@@ -369,6 +371,76 @@ func (f *fakeTemps) alertRoutes(h func(string, func(http.ResponseWriter, *http.R
 	h("DELETE /api/projects/{pid}/edge-rules/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if e := edge(w, r); e != nil {
 			delete(a.edges, e.ID)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+}
+
+// apiKeyRoutes mimics /api-keys: a default expiry one year ahead, the key
+// shown once, unique names, and permissions ignored on update.
+func (f *fakeTemps) apiKeyRoutes(h func(string, func(http.ResponseWriter, *http.Request))) {
+	a := f.al
+	h("POST /api/api-keys", func(w http.ResponseWriter, r *http.Request) {
+		var req client.CreateAPIKeyRequest
+		_ = decode(r, &req)
+		for _, k := range a.apiKeys {
+			if k.Name == req.Name {
+				problem(w, 409, "Conflict", "API key with this name already exists")
+				return
+			}
+		}
+		if req.RoleType == "custom" && (req.Permissions == nil || len(*req.Permissions) == 0) {
+			problem(w, 400, "Bad Request", "Custom role requires at least one permission")
+			return
+		}
+		k := &client.APIKey{ID: f.nextID(), Name: req.Name, RoleType: req.RoleType, ProjectID: req.ProjectID,
+			EnvironmentID: req.EnvironmentID, IsActive: ptr(true), ExpiresAt: utc(req.ExpiresAt)}
+		if req.RoleType == "custom" {
+			k.Permissions = req.Permissions
+		}
+		if k.ExpiresAt == nil {
+			k.ExpiresAt = ptr(time.Now().AddDate(1, 0, 0).UTC().Format(time.RFC3339Nano))
+		}
+		k.KeyPrefix = fmt.Sprintf("tk_%05d", k.ID)
+		out := *k
+		out.APIKey = k.KeyPrefix + "secret"
+		a.apiKeys[k.ID] = k
+		writeJSON(w, 201, out)
+	})
+	key := func(w http.ResponseWriter, r *http.Request) *client.APIKey {
+		k, ok := a.apiKeys[pathID(r, "id")]
+		if !ok {
+			notFound(w, "API key", r.PathValue("id"))
+			return nil
+		}
+		return k
+	}
+	h("GET /api/api-keys/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if k := key(w, r); k != nil {
+			writeJSON(w, 200, k)
+		}
+	})
+	h("PATCH /api/api-keys/{id}", func(w http.ResponseWriter, r *http.Request) {
+		k := key(w, r)
+		if k == nil {
+			return
+		}
+		var req client.UpdateAPIKeyRequest
+		_ = decode(r, &req)
+		if req.Name != nil {
+			k.Name = *req.Name
+		}
+		if req.IsActive != nil {
+			k.IsActive = req.IsActive
+		}
+		if req.ExpiresAt != nil {
+			k.ExpiresAt = utc(req.ExpiresAt)
+		}
+		writeJSON(w, 200, k)
+	})
+	h("DELETE /api/api-keys/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if k := key(w, r); k != nil {
+			delete(a.apiKeys, k.ID)
 			w.WriteHeader(http.StatusNoContent)
 		}
 	})
