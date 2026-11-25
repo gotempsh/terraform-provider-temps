@@ -247,7 +247,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 
 		apiErr := readAPIError(resp, method, path)
-		if attempt < c.maxRetries && retryableStatus(method, resp.StatusCode) {
+		if attempt < c.maxRetries && (retryableStatus(method, resp.StatusCode) || retryableConflict(apiErr)) {
 			if werr := c.wait(ctx, attempt, retryAfter(resp.Header.Get("Retry-After"))); werr != nil {
 				return fmt.Errorf("%w (after: %w)", werr, apiErr)
 			}
@@ -305,6 +305,15 @@ func retryableStatus(method string, status int) bool {
 		return idempotent(method)
 	}
 	return false
+}
+
+// retryableConflict reports a 409 that Temps raises when a concurrent write
+// changed what the request was authorized against (for example two projects
+// joining one group at once). Temps writes nothing and asks the caller to
+// "retry the request", so it is safe to retry for every method.
+func retryableConflict(e *APIError) bool {
+	return e.StatusCode == http.StatusConflict &&
+		strings.Contains(strings.ToLower(e.Detail), "retry the request")
 }
 
 func retryableTransportError(method string, err error) bool {

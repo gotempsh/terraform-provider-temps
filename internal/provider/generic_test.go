@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -575,4 +578,49 @@ func TestGenericRenderPathEscapes(t *testing.T) {
 	if got != "/dns-providers/a%20b%2Fc/domains/a%20b%2Fc" {
 		t.Errorf("renderPath = %q", got)
 	}
+}
+
+func TestGenericClearWithSendsEmptyString(t *testing.T) {
+	r := &genericResource{s: &gspec{Name: "thing", Fields: []gfield{
+		{Name: "description", Kind: kString, Clearable: true, ClearWith: ""},
+		{Name: "note", Kind: kString, Clearable: true},
+	}}}
+	v := gvals{"description": types.StringNull(), "note": types.StringNull()}
+	var diags diag.Diagnostics
+	body := r.body(context.Background(), v, false, &diags)
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	if d, ok := body["description"]; !ok || d != "" {
+		t.Fatalf("description = %#v (present %v), want \"\"", d, ok)
+	}
+	if n, ok := body["note"]; !ok || n != nil {
+		t.Fatalf("note = %#v (present %v), want null", n, ok)
+	}
+	// Nothing is cleared on create.
+	if body := r.body(context.Background(), v, true, &diags); len(body) != 0 {
+		t.Fatalf("create body = %#v, want empty", body)
+	}
+}
+
+func TestErrorSpecsNormalizeServerKeys(t *testing.T) {
+	rules := map[string]any{"data": []any{map[string]any{
+		"id": 7.0, "position": 0.0, "owner_name": "Admin", "created_at": "x", "updated_at": "x",
+		"pattern": "src/**", "owner_user_id": 1.0,
+	}}}
+	errorOwnershipRulesSpec.Normalize(rules)
+	if got := rules["data"].([]any)[0]; !sameJSON(got, map[string]any{"pattern": "src/**", "owner_user_id": 1.0}) {
+		t.Fatalf("rule = %#v", got)
+	}
+	search := map[string]any{"filters": map[string]any{"status": "unresolved", "assignee": nil, "sort_order": "desc"}}
+	errorSavedSearchSpec.Normalize(search)
+	if got := search["filters"]; !sameJSON(got, map[string]any{"status": "unresolved", "sort_order": "desc"}) {
+		t.Fatalf("filters = %#v", got)
+	}
+}
+
+func sameJSON(a, b any) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
 }

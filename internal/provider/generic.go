@@ -79,6 +79,10 @@ type gfield struct {
 	Computed bool
 	// Clearable: optional and not computed; removing it sends null.
 	Clearable bool
+	// ClearWith is sent instead of null when a Clearable value is removed,
+	// for PATCH endpoints where null means "unchanged" and an empty string
+	// clears.
+	ClearWith any
 	Sensitive bool
 	ForceNew  bool
 	// CreateOnly is sent only on create and forces replacement when changed.
@@ -99,6 +103,9 @@ type gfield struct {
 	Default any
 	// ZeroOK accepts 0 as an imported ID (the control-plane node is 0).
 	ZeroOK bool
+	// Time marks an RFC 3339 timestamp: a value naming the same instant as
+	// the one held (another offset or precision) is not a change.
+	Time bool
 	// ReplaceIf (strings) forces replacement for the changes it accepts.
 	ReplaceIf     stringplanmodifier.RequiresReplaceIfFunc
 	ReplaceIfDesc string
@@ -187,6 +194,14 @@ type gspec struct {
 	BodyHook func(body map[string]any, v gvals, create bool)
 	// ReadHook replaces the read; it returns nil when the object is gone.
 	ReadHook func(ctx context.Context, c *client.Client, v gvals, id string) (map[string]any, error)
+	// CreateResult reshapes the create response before the identifier and
+	// values are read from it (a response nesting the object next to a
+	// one-time secret).
+	CreateResult func(obj map[string]any) map[string]any
+	// ExpectedCurrent maps body keys to keys of the current object, read
+	// just before every write, for endpoints that refuse a write when what
+	// the client last saw has changed.
+	ExpectedCurrent map[string]string
 	// AfterWrite runs follow-up calls after create or update.
 	AfterWrite func(ctx context.Context, c *client.Client, plan, prior gvals, id string) error
 }
@@ -958,7 +973,7 @@ func (r *genericResource) body(ctx context.Context, v gvals, create bool, diags 
 		}
 		if val.IsNull() {
 			if !create && f.Clearable && f.JSON != "." {
-				setPath(body, f.key(), nil)
+				setPath(body, f.key(), f.ClearWith)
 			}
 			continue
 		}
@@ -1003,6 +1018,9 @@ func (r *genericResource) apply(v gvals, obj map[string]any, diags *diag.Diagnos
 		nv, err := fromJSON(f, raw, v[f.Name])
 		if err != nil {
 			diags.AddError("Unexpected response from Temps", err.Error())
+			continue
+		}
+		if f.Time && sameInstant(v[f.Name], nv) {
 			continue
 		}
 		v[f.Name] = nv
@@ -1085,6 +1103,18 @@ func (r *genericResource) write(ctx context.Context, o gop, v, prior gvals, id s
 	if diags.HasError() {
 		return nil, false
 	}
+	if len(r.s.ExpectedCurrent) > 0 {
+		current, err := r.readObject(ctx, v, id)
+		if err != nil {
+			addAPIError(diags, "Unable to read the current state of "+r.what(v), err, r.s.Perms)
+			return nil, false
+		}
+		for _, k := range sortedKeys(r.s.ExpectedCurrent) {
+			if cur, ok := getPath(current, r.s.ExpectedCurrent[k]); ok {
+				setPath(body, k, cur)
+			}
+		}
+	}
 	if !create && r.s.ExpectedVersion != "" {
 		// A version that changed since the refresh makes Temps refuse the
 		// write instead of overwriting someone else's change.
@@ -1141,6 +1171,9 @@ func (r *genericResource) Create(ctx context.Context, req resource.CreateRequest
 	if !ok {
 		return
 	}
+	if r.s.CreateResult != nil {
+		obj = r.s.CreateResult(obj)
+	}
 	id := ""
 	if r.s.IDAttr != "" {
 		id = scalarString(v[r.s.IDAttr])
@@ -1166,7 +1199,9 @@ func (r *genericResource) Create(ctx context.Context, req resource.CreateRequest
 		if err != nil {
 			addAPIError(&resp.Diagnostics, "Unable to read back "+r.what(v), err, r.s.Perms)
 		} else if fresh != nil {
-			obj = fresh
+			// Keep what only the create response carries (a secret shown
+			// once) under the values read back.
+			obj = overlay(obj, fresh)
 		}
 	}
 	r.apply(v, obj, &resp.Diagnostics)
@@ -1331,4 +1366,16 @@ func unixMillis(raw any) any {
 		return time.UnixMilli(n).UTC().Format(time.RFC3339)
 	}
 	return raw
+}
+
+// sameInstant reports whether two RFC 3339 strings name the same time.
+func sameInstant(a, b attr.Value) bool {
+	as, aok := a.(types.String)
+	bs, bok := b.(types.String)
+	if !aok || !bok || !known(as) || !known(bs) {
+		return false
+	}
+	at, err1 := time.Parse(time.RFC3339Nano, as.ValueString())
+	bt, err2 := time.Parse(time.RFC3339Nano, bs.ValueString())
+	return err1 == nil && err2 == nil && at.Equal(bt)
 }

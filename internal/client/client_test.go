@@ -177,6 +177,33 @@ func TestGatewayErrorsRetryOnlyIdempotentMethods(t *testing.T) {
 	}
 }
 
+func TestRetriesConflictThatAsksForRetry(t *testing.T) {
+	var calls atomic.Int32
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) < 2 {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"title":"Group Members Changed","detail":"1 project(s) joined project group 1 while this request was being authorized; retry the request"}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":1,"name":"web"}`)
+	}))
+	if _, err := c.CreateProject(context.Background(), CreateProjectRequest{Name: "web"}); err != nil || calls.Load() != 2 {
+		t.Fatalf("err=%v calls=%d", err, calls.Load())
+	}
+
+	// Any other conflict is final.
+	calls.Store(0)
+	c = newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"title":"Conflict","detail":"A project named web already exists"}`)
+	}))
+	if _, err := c.CreateProject(context.Background(), CreateProjectRequest{Name: "web"}); !IsConflict(err) || calls.Load() != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls.Load())
+	}
+}
+
 func TestDoesNotRetryClientErrors(t *testing.T) {
 	var calls atomic.Int32
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
