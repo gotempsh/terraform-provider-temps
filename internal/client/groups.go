@@ -152,7 +152,7 @@ func (c *Client) GetProjectGroupVariable(ctx context.Context, groupID, id int64)
 			return &all[i], nil
 		}
 	}
-	return nil, notFoundError(http.MethodGet, idPath("/project-groups/%d/env-vars", groupID), fmt.Sprintf("project group %d has no variable %d", groupID, id))
+	return nil, notFoundError(idPath("/project-groups/%d/env-vars", groupID), fmt.Sprintf("project group %d has no variable %d", groupID, id))
 }
 
 // CreateProjectGroupVariable creates a group variable.

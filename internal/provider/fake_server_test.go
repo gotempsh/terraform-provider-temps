@@ -1139,6 +1139,7 @@ func (f *fakeTemps) routes() http.Handler {
 	f.extraRoutes(h)
 	f.alertRoutes(h)
 	f.apiKeyRoutes(h)
+	f.inboundFilterRoutes(h)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/by-slug/") {
 			slugMux.ServeHTTP(w, r)

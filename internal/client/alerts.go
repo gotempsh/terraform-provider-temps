@@ -66,7 +66,7 @@ func (c *Client) GetProjectSecret(ctx context.Context, projectID, id int64) (*Pr
 			return &list[i], nil
 		}
 	}
-	return nil, notFoundError(http.MethodGet, p, fmt.Sprintf("Secret %d not found in project %d", id, projectID))
+	return nil, notFoundError(p, fmt.Sprintf("Secret %d not found in project %d", id, projectID))
 }
 
 // UpdateProjectSecret replaces a secret's scope, and its value when given.
@@ -246,4 +246,61 @@ func (c *Client) UpdateEdgeRule(ctx context.Context, projectID, id int64, req Ed
 // DeleteEdgeRule deletes an edge rule.
 func (c *Client) DeleteEdgeRule(ctx context.Context, projectID, id int64) error {
 	return c.do(ctx, http.MethodDelete, idPath("/projects/%d/edge-rules/%d", projectID, id), nil, nil, nil)
+}
+
+// InboundFilter is a rule that drops matching error events before they are
+// stored.
+type InboundFilter struct {
+	ID           int64   `json:"id"`
+	ProjectID    int64   `json:"project_id"`
+	Kind         string  `json:"kind"`
+	Pattern      *string `json:"pattern"`
+	Enabled      bool    `json:"enabled"`
+	DroppedCount int64   `json:"dropped_count"`
+}
+
+// InboundFilterRequest is the body of POST and PATCH
+// /projects/{id}/error-inbound-filters. PATCH ignores Kind.
+type InboundFilterRequest struct {
+	Kind    string  `json:"kind,omitempty"`
+	Pattern *string `json:"pattern,omitempty"`
+	Enabled *bool   `json:"enabled,omitempty"`
+}
+
+type inboundFilterList struct {
+	Filters []InboundFilter `json:"filters"`
+}
+
+// CreateInboundFilter adds an inbound filter to a project.
+func (c *Client) CreateInboundFilter(ctx context.Context, projectID int64, req InboundFilterRequest) (*InboundFilter, error) {
+	var f InboundFilter
+	return &f, c.do(ctx, http.MethodPost, idPath("/projects/%d/error-inbound-filters", projectID), nil, req, &f)
+}
+
+// GetInboundFilter finds one filter in the project's list; Temps has no
+// single-filter GET. The list is bounded by the project's limit.
+func (c *Client) GetInboundFilter(ctx context.Context, projectID, id int64) (*InboundFilter, error) {
+	var list inboundFilterList
+	p := idPath("/projects/%d/error-inbound-filters", projectID)
+	if err := c.do(ctx, http.MethodGet, p, nil, nil, &list); err != nil {
+		return nil, err
+	}
+	for i := range list.Filters {
+		if list.Filters[i].ID == id {
+			return &list.Filters[i], nil
+		}
+	}
+	return nil, notFoundError(p, fmt.Sprintf("Inbound filter %d not found in project %d", id, projectID))
+}
+
+// UpdateInboundFilter changes a filter's pattern or switches it on or off.
+func (c *Client) UpdateInboundFilter(ctx context.Context, projectID, id int64, req InboundFilterRequest) (*InboundFilter, error) {
+	req.Kind = ""
+	var f InboundFilter
+	return &f, c.do(ctx, http.MethodPatch, fmt.Sprintf("/projects/%d/error-inbound-filters/%d", projectID, id), nil, req, &f)
+}
+
+// DeleteInboundFilter removes an inbound filter.
+func (c *Client) DeleteInboundFilter(ctx context.Context, projectID, id int64) error {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/projects/%d/error-inbound-filters/%d", projectID, id), nil, nil, nil)
 }

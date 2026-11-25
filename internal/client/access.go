@@ -179,7 +179,7 @@ func (c *Client) GetProjectAccess(ctx context.Context, projectID, teamID int64) 
 			return &all[i], nil
 		}
 	}
-	return nil, notFoundError(http.MethodGet, idPath("/projects/%d/access", projectID), fmt.Sprintf("project %d has no access grant for team %d", projectID, teamID))
+	return nil, notFoundError(idPath("/projects/%d/access", projectID), fmt.Sprintf("project %d has no access grant for team %d", projectID, teamID))
 }
 
 // GrantProjectAccess grants a team a role on a project. The API upserts: a

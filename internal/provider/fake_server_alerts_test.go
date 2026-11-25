@@ -22,6 +22,7 @@ type fakeAlerts struct {
 	rules   map[int64]*client.ErrorAlertRule
 	edges   map[int64]*client.EdgeRule
 	apiKeys map[int64]*client.APIKey
+	filters map[int64]*client.InboundFilter
 	// seeded records which projects already got their default alert rules.
 	seeded map[int64]bool
 }
@@ -33,7 +34,7 @@ type fakeSecret struct {
 
 func newFakeAlerts() *fakeAlerts {
 	return &fakeAlerts{secrets: map[int64]*fakeSecret{}, routes: map[int64]*client.NotificationRoute{},
-		rules: map[int64]*client.ErrorAlertRule{}, edges: map[int64]*client.EdgeRule{}, apiKeys: map[int64]*client.APIKey{}, seeded: map[int64]bool{}}
+		rules: map[int64]*client.ErrorAlertRule{}, edges: map[int64]*client.EdgeRule{}, apiKeys: map[int64]*client.APIKey{}, filters: map[int64]*client.InboundFilter{}, seeded: map[int64]bool{}}
 }
 
 func (f *fakeTemps) alertRoutes(h func(string, func(http.ResponseWriter, *http.Request))) {
@@ -441,6 +442,90 @@ func (f *fakeTemps) apiKeyRoutes(h func(string, func(http.ResponseWriter, *http.
 	h("DELETE /api/api-keys/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if k := key(w, r); k != nil {
 			delete(a.apiKeys, k.ID)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+}
+
+// inboundFilterRoutes mimics /projects/{id}/error-inbound-filters: built-in
+// kinds once per project (409), patterns required only for pattern kinds,
+// and PATCH ignoring a null pattern.
+func (f *fakeTemps) inboundFilterRoutes(h func(string, func(http.ResponseWriter, *http.Request))) {
+	a := f.al
+	base := "/api/projects/{pid}/error-inbound-filters"
+	patternKind := func(k string) bool { return k == "error_message" || k == "release" }
+	h("GET "+base, func(w http.ResponseWriter, r *http.Request) {
+		pid := pathID(r, "pid")
+		out := []client.InboundFilter{}
+		for _, fl := range a.filters {
+			if fl.ProjectID == pid {
+				out = append(out, *fl)
+			}
+		}
+		writeJSON(w, 200, map[string]any{"filters": out, "limit": 50, "max_pattern_chars": 200})
+	})
+	h("POST "+base, func(w http.ResponseWriter, r *http.Request) {
+		pid := pathID(r, "pid")
+		if _, ok := f.projects[pid]; !ok {
+			problem(w, 500, "Internal Server Error", "foreign key constraint")
+			return
+		}
+		var req client.InboundFilterRequest
+		_ = decode(r, &req)
+		hasPattern := req.Pattern != nil && strings.TrimSpace(*req.Pattern) != ""
+		switch {
+		case patternKind(req.Kind) && !hasPattern:
+			problem(w, 400, "Validation Error", "needs a pattern")
+			return
+		case !patternKind(req.Kind) && req.Pattern != nil:
+			problem(w, 400, "Validation Error", "takes no pattern")
+			return
+		}
+		if !patternKind(req.Kind) {
+			for _, fl := range a.filters {
+				if fl.ProjectID == pid && fl.Kind == req.Kind {
+					problem(w, 409, "Inbound Filter Already Exists", "already has this filter")
+					return
+				}
+			}
+		}
+		fl := &client.InboundFilter{ID: f.nextID(), ProjectID: pid, Kind: req.Kind, Pattern: req.Pattern, Enabled: true}
+		if req.Enabled != nil {
+			fl.Enabled = *req.Enabled
+		}
+		a.filters[fl.ID] = fl
+		writeJSON(w, 201, fl)
+	})
+	filter := func(w http.ResponseWriter, r *http.Request) *client.InboundFilter {
+		fl, ok := a.filters[pathID(r, "id")]
+		if !ok || fl.ProjectID != pathID(r, "pid") {
+			notFound(w, "inbound filter", r.PathValue("id"))
+			return nil
+		}
+		return fl
+	}
+	h("PATCH "+base+"/{id}", func(w http.ResponseWriter, r *http.Request) {
+		fl := filter(w, r)
+		if fl == nil {
+			return
+		}
+		var req client.InboundFilterRequest
+		_ = decode(r, &req)
+		if req.Pattern != nil {
+			if !patternKind(fl.Kind) {
+				problem(w, 400, "Validation Error", "takes no pattern")
+				return
+			}
+			fl.Pattern = req.Pattern
+		}
+		if req.Enabled != nil {
+			fl.Enabled = *req.Enabled
+		}
+		writeJSON(w, 200, fl)
+	})
+	h("DELETE "+base+"/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if fl := filter(w, r); fl != nil {
+			delete(a.filters, fl.ID)
 			w.WriteHeader(http.StatusNoContent)
 		}
 	})

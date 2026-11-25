@@ -165,6 +165,7 @@ func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource 
 		newErrorAlertRuleResource,
 		newEdgeRuleResource,
 		newAPIKeyResource,
+		newInboundFilterResource,
 	}
 }
 
