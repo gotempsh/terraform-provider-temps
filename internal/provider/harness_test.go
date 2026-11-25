@@ -33,6 +33,9 @@ type harness struct {
 	fake   *fakeTemps
 	client *client.Client
 	prefix string
+	// IDs recorded by step checks for later out-of-band changes.
+	lastNotifiers []int64
+	lastEdges     [][2]int64
 }
 
 func unitHarness(t *testing.T) *harness {

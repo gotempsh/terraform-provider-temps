@@ -160,6 +160,10 @@ func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource 
 		newProjectGroupResource,
 		newProjectGroupMembershipResource,
 		newProjectGroupVariableResource,
+		newProjectSecretResource,
+		newNotificationRouteResource,
+		newErrorAlertRuleResource,
+		newEdgeRuleResource,
 	}
 }
 

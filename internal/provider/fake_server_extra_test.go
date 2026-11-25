@@ -858,6 +858,10 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 	h("DELETE /api/notification-providers/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if n := notifier(w, r); n != nil {
 			delete(x.notifiers, n.p.ID)
+			// Like Temps: routes lose the provider, even their last one.
+			for _, rt := range f.al.routes {
+				rt.ProviderIDs = slices.DeleteFunc(rt.ProviderIDs, func(id int64) bool { return id == n.p.ID })
+			}
 			w.WriteHeader(http.StatusNoContent)
 		}
 	})

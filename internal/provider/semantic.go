@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"reflect"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -149,3 +150,17 @@ var (
 	hostnameRE   = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	redirectCode = []int64{301, 302, 303, 307, 308}
 )
+
+// notBlank rejects a string of only whitespace, which Temps treats as empty.
+type notBlank struct{}
+
+func (notBlank) Description(context.Context) string               { return "must contain a non-space character" }
+func (v notBlank) MarkdownDescription(ctx context.Context) string { return v.Description(ctx) }
+func (notBlank) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if known(req.ConfigValue) && strings.TrimSpace(req.ConfigValue.ValueString()) == "" {
+		resp.Diagnostics.AddAttributeError(req.Path, "Blank value", fmt.Sprintf("%s must contain a non-space character.", req.Path))
+	}
+}
+
+// joinTicks renders values as "a`, `b" for use inside a pair of backticks.
+func joinTicks(vals []string) string { return strings.Join(vals, "`, `") }
