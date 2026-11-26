@@ -142,6 +142,16 @@ type gop struct {
 	Envelope string
 	// Body is a fixed request body (a reset on delete).
 	Body map[string]any
+	// Query adds query parameters (an owning project the API scopes the
+	// object by).
+	Query func(v gvals) url.Values
+}
+
+func (o gop) query(v gvals) url.Values {
+	if o.Query == nil {
+		return nil
+	}
+	return o.Query(v)
 }
 
 type gspec struct {
@@ -204,6 +214,9 @@ type gspec struct {
 	ExpectedCurrent map[string]string
 	// AfterWrite runs follow-up calls after create or update.
 	AfterWrite func(ctx context.Context, c *client.Client, plan, prior gvals, id string) error
+	// DeleteHook replaces Delete, for objects some of which Temps refuses to
+	// delete. A not-found error is ignored.
+	DeleteHook func(ctx context.Context, c *client.Client, v gvals, id string) error
 }
 
 func (s *gspec) idKey() string {
@@ -1057,7 +1070,7 @@ func (r *genericResource) readObject(ctx context.Context, v gvals, id string) (m
 	}
 	p := r.render(s.Read, v, id)
 	if !s.List {
-		raw, err := r.client.Raw(ctx, "GET", p, nil, nil)
+		raw, err := r.client.Raw(ctx, "GET", p, s.Read.query(v), nil)
 		if client.IsNotFound(err) {
 			return nil, nil
 		}
@@ -1072,9 +1085,13 @@ func (r *genericResource) readObject(ctx context.Context, v gvals, id string) (m
 	}
 	const pageSize = 100
 	for page := 1; page <= 1000; page++ {
-		var q url.Values
+		q := s.Read.query(v)
 		if s.Paged {
-			q = url.Values{"page": {strconv.Itoa(page)}, "page_size": {strconv.Itoa(pageSize)}}
+			if q == nil {
+				q = url.Values{}
+			}
+			q.Set("page", strconv.Itoa(page))
+			q.Set("page_size", strconv.Itoa(pageSize))
 		}
 		raw, err := r.client.Raw(ctx, "GET", p, q, nil)
 		if client.IsNotFound(err) {
@@ -1150,7 +1167,7 @@ func (r *genericResource) write(ctx context.Context, o gop, v, prior gvals, id s
 	if r.s.BodyEnvelope != "" {
 		in = map[string]any{r.s.BodyEnvelope: body}
 	}
-	raw, err := r.client.Raw(ctx, o.Method, r.render(o, v, id), nil, in)
+	raw, err := r.client.Raw(ctx, o.Method, r.render(o, v, id), o.query(v), in)
 	if err != nil {
 		verb := "update"
 		if create {
@@ -1279,6 +1296,12 @@ func (r *genericResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if r.s.DeleteHook != nil {
+		if err := r.s.DeleteHook(ctx, r.client, v, r.serverID(v)); err != nil && !client.IsNotFound(err) {
+			addAPIError(&resp.Diagnostics, "Unable to delete "+r.what(v), err, r.s.Perms)
+		}
+		return
+	}
 	o := r.s.Delete
 	if o.Method == "" {
 		return
@@ -1287,7 +1310,7 @@ func (r *genericResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if o.Body != nil {
 		in = o.Body
 	}
-	_, err := r.client.Raw(ctx, o.Method, r.render(o, v, r.serverID(v)), nil, in)
+	_, err := r.client.Raw(ctx, o.Method, r.render(o, v, r.serverID(v)), o.query(v), in)
 	if err != nil && !client.IsNotFound(err) {
 		addAPIError(&resp.Diagnostics, "Unable to delete "+r.what(v), err, r.s.Perms)
 	}
