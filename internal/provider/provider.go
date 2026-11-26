@@ -254,6 +254,10 @@ var genericSpecs = []*gspec{
 	telegramNotificationProviderSpec,
 	cloudflareNotificationProviderSpec,
 	teamMemberSpec,
+	nodeAlertRuleSpec,
+	serviceAlertRuleSpec,
+	otelAlertRuleSpec,
+	otelDashboardSpec,
 }
 
 func (p *tempsProvider) DataSources(_ context.Context) []func() datasource.DataSource {
