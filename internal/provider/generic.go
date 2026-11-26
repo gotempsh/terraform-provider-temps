@@ -545,7 +545,7 @@ func (r *genericResource) save(ctx context.Context, st *tfsdk.State, v gvals, di
 func (r *genericResource) tfID(v gvals, serverID string) string {
 	parts := make([]string, 0, len(r.s.Parents)+1)
 	for _, p := range r.s.Parents {
-		if r.s.OptionalParents && (v[p] == nil || v[p].IsNull()) {
+		if r.s.OptionalParents && !hasValue(v[p]) {
 			continue
 		}
 		parts = append(parts, scalarString(v[p]))
@@ -570,7 +570,7 @@ func (r *genericResource) serverID(v gvals) string {
 	s := id.ValueString()
 	n := 0
 	for _, p := range r.s.Parents {
-		if !r.s.OptionalParents || (v[p] != nil && !v[p].IsNull()) {
+		if !r.s.OptionalParents || hasValue(v[p]) {
 			n++
 		}
 	}
@@ -580,6 +580,10 @@ func (r *genericResource) serverID(v gvals) string {
 	}
 	return s
 }
+
+// hasValue reports whether an optional parent has a value. At create an optional
+// parent left out of the configuration is still unknown.
+func hasValue(v attr.Value) bool { return v != nil && !v.IsNull() && !v.IsUnknown() }
 
 func scalarString(v attr.Value) string {
 	switch x := v.(type) {
