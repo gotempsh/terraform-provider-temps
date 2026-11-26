@@ -249,6 +249,18 @@ var genericSpecs = []*gspec{
 	adminGateSettingsSpec,
 	aiModelCatalogSettingsSpec,
 	aiCodingAgentSettingsSpec,
+	slackNotificationProviderSpec,
+	emailNotificationProviderSpec,
+	telegramNotificationProviderSpec,
+	cloudflareNotificationProviderSpec,
+	teamMemberSpec,
+	nodeAlertRuleSpec,
+	serviceAlertRuleSpec,
+	otelAlertRuleSpec,
+	otelDashboardSpec,
+	analyticsGoalSpec,
+	analyticsTrafficFilterSpec,
+	projectAnalyticsSettingsSpec,
 }
 
 func (p *tempsProvider) DataSources(_ context.Context) []func() datasource.DataSource {

@@ -610,7 +610,7 @@ func TestGenericClearWithReadsEmptyAsUnset(t *testing.T) {
 	}}}
 	v := gvals{"description": types.StringValue("old"), "note": types.StringValue("old")}
 	var diags diag.Diagnostics
-	r.apply(v, map[string]any{"description": "", "note": ""}, &diags)
+	r.apply(v, map[string]any{"description": "", "note": ""}, false, &diags)
 	if diags.HasError() {
 		t.Fatal(diags)
 	}
@@ -639,8 +639,10 @@ func TestErrorSpecsNormalizeServerKeys(t *testing.T) {
 	}
 }
 
+// sameJSON reports whether two decoded values encode to equal JSON (a
+// response's json.Number 20 and a Go 20).
 func sameJSON(a, b any) bool {
-	x, _ := json.Marshal(a)
-	y, _ := json.Marshal(b)
-	return string(x) == string(y)
+	ja, errA := json.Marshal(a)
+	jb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && jsonEqual(string(ja), string(jb))
 }
