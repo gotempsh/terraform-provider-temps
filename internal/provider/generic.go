@@ -30,6 +30,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -92,14 +93,18 @@ type gfield struct {
 	Initial bool
 	// Path values only build request paths and are never sent in a body.
 	Path bool
-	// Volatile outputs change on their own (status, timestamps): they are not
-	// carried over from state into plans.
+	// Volatile values change on their own (status, timestamps) or with other
+	// attributes (a name the server derives): they are not carried over from
+	// state into plans.
 	Volatile bool
 	// Subset (kJSON): the server fills in defaults; keep the configured
 	// document while every configured key still has the configured value.
 	Subset bool
 	OneOf  []string
-	// Default for an optional string, bool or int left out of configuration.
+	// Default for an optional string, bool, int or string list ([]string)
+	// left out of configuration. Matching the server's own default makes
+	// removing the attribute restore it, on endpoints that leave an absent
+	// key unchanged.
 	Default any
 	// ZeroOK accepts 0 as an imported ID (the control-plane node is 0).
 	ZeroOK bool
@@ -142,6 +147,16 @@ type gop struct {
 	Envelope string
 	// Body is a fixed request body (a reset on delete).
 	Body map[string]any
+	// Query adds query parameters (an owning project the API scopes the
+	// object by).
+	Query func(v gvals) url.Values
+}
+
+func (o gop) query(v gvals) url.Values {
+	if o.Query == nil {
+		return nil
+	}
+	return o.Query(v)
 }
 
 type gspec struct {
@@ -204,6 +219,12 @@ type gspec struct {
 	ExpectedCurrent map[string]string
 	// AfterWrite runs follow-up calls after create or update.
 	AfterWrite func(ctx context.Context, c *client.Client, plan, prior gvals, id string) error
+	// DeleteHook replaces Delete, for objects some of which Temps refuses to
+	// delete. A not-found error is ignored.
+	DeleteHook func(ctx context.Context, c *client.Client, v gvals, id string) error
+	// Validate checks the configuration as a whole before a plan. Values may
+	// be unknown.
+	Validate func(v gvals, diags *diag.Diagnostics)
 }
 
 func (s *gspec) idKey() string {
@@ -251,8 +272,9 @@ type genericResource struct {
 }
 
 var (
-	_ resource.Resource                = &genericResource{}
-	_ resource.ResourceWithImportState = &genericResource{}
+	_ resource.Resource                   = &genericResource{}
+	_ resource.ResourceWithImportState    = &genericResource{}
+	_ resource.ResourceWithValidateConfig = &genericResource{}
 )
 
 func genericFactory(s *gspec) func() resource.Resource {
@@ -386,8 +408,16 @@ func (r *genericResource) attribute(f *gfield) schema.Attribute {
 				pm = append(pm, listplanmodifier.RequiresReplace())
 			}
 		}
-		return schema.ListAttribute{Required: required, Optional: optional, Computed: computed, Sensitive: sensitive,
+		a := schema.ListAttribute{Required: required, Optional: optional, Computed: computed, Sensitive: sensitive,
 			ElementType: elemType(f.Kind), MarkdownDescription: desc, PlanModifiers: pm}
+		if d, ok := f.Default.([]string); ok {
+			elems := make([]attr.Value, len(d))
+			for i, e := range d {
+				elems[i] = types.StringValue(e)
+			}
+			a.Default = listdefault.StaticValue(types.ListValueMust(types.StringType, elems))
+		}
+		return a
 	case kStringSet, kIntSet:
 		var pm []planmodifier.Set
 		if keep {
@@ -545,7 +575,7 @@ func (r *genericResource) save(ctx context.Context, st *tfsdk.State, v gvals, di
 func (r *genericResource) tfID(v gvals, serverID string) string {
 	parts := make([]string, 0, len(r.s.Parents)+1)
 	for _, p := range r.s.Parents {
-		if r.s.OptionalParents && (v[p] == nil || v[p].IsNull()) {
+		if r.s.OptionalParents && !hasValue(v[p]) {
 			continue
 		}
 		parts = append(parts, scalarString(v[p]))
@@ -570,7 +600,7 @@ func (r *genericResource) serverID(v gvals) string {
 	s := id.ValueString()
 	n := 0
 	for _, p := range r.s.Parents {
-		if !r.s.OptionalParents || (v[p] != nil && !v[p].IsNull()) {
+		if !r.s.OptionalParents || hasValue(v[p]) {
 			n++
 		}
 	}
@@ -580,6 +610,10 @@ func (r *genericResource) serverID(v gvals) string {
 	}
 	return s
 }
+
+// hasValue reports whether an optional parent has a value. At create an optional
+// parent left out of the configuration is still unknown.
+func hasValue(v attr.Value) bool { return v != nil && !v.IsNull() && !v.IsUnknown() }
 
 func scalarString(v attr.Value) string {
 	switch x := v.(type) {
@@ -996,8 +1030,10 @@ func (r *genericResource) body(ctx context.Context, v gvals, create bool, diags 
 }
 
 // apply copies a response object into v. Values the server does not return
-// keep what v holds (configuration on write, state on read).
-func (r *genericResource) apply(v gvals, obj map[string]any, diags *diag.Diagnostics) {
+// keep what v holds (configuration on write, state on read). importing fills
+// unset path values from the response, which only an import may do: in any
+// other read an unset path value is the configuration's.
+func (r *genericResource) apply(v gvals, obj map[string]any, importing bool, diags *diag.Diagnostics) {
 	if r.s.Normalize != nil && obj != nil {
 		r.s.Normalize(obj)
 	}
@@ -1007,8 +1043,8 @@ func (r *genericResource) apply(v gvals, obj map[string]any, diags *diag.Diagnos
 			continue
 		}
 		// Path values come from configuration; read them only to fill an
-		// import.
-		if f.Path && v[f.Name] != nil && !v[f.Name].IsNull() && !v[f.Name].IsUnknown() {
+		// import or a value the plan left to the server.
+		if cur := v[f.Name]; f.Path && cur != nil && !cur.IsUnknown() && (!cur.IsNull() || !importing) {
 			continue
 		}
 		raw, ok := getPath(obj, f.readKey())
@@ -1053,7 +1089,7 @@ func (r *genericResource) readObject(ctx context.Context, v gvals, id string) (m
 	}
 	p := r.render(s.Read, v, id)
 	if !s.List {
-		raw, err := r.client.Raw(ctx, "GET", p, nil, nil)
+		raw, err := r.client.Raw(ctx, "GET", p, s.Read.query(v), nil)
 		if client.IsNotFound(err) {
 			return nil, nil
 		}
@@ -1068,9 +1104,13 @@ func (r *genericResource) readObject(ctx context.Context, v gvals, id string) (m
 	}
 	const pageSize = 100
 	for page := 1; page <= 1000; page++ {
-		var q url.Values
+		q := s.Read.query(v)
 		if s.Paged {
-			q = url.Values{"page": {strconv.Itoa(page)}, "page_size": {strconv.Itoa(pageSize)}}
+			if q == nil {
+				q = url.Values{}
+			}
+			q.Set("page", strconv.Itoa(page))
+			q.Set("page_size", strconv.Itoa(pageSize))
 		}
 		raw, err := r.client.Raw(ctx, "GET", p, q, nil)
 		if client.IsNotFound(err) {
@@ -1146,7 +1186,7 @@ func (r *genericResource) write(ctx context.Context, o gop, v, prior gvals, id s
 	if r.s.BodyEnvelope != "" {
 		in = map[string]any{r.s.BodyEnvelope: body}
 	}
-	raw, err := r.client.Raw(ctx, o.Method, r.render(o, v, id), nil, in)
+	raw, err := r.client.Raw(ctx, o.Method, r.render(o, v, id), o.query(v), in)
 	if err != nil {
 		verb := "update"
 		if create {
@@ -1208,9 +1248,13 @@ func (r *genericResource) Create(ctx context.Context, req resource.CreateRequest
 			obj = overlay(obj, fresh)
 		}
 	}
-	r.apply(v, obj, &resp.Diagnostics)
+	r.apply(v, obj, false, &resp.Diagnostics)
 	r.save(ctx, &resp.State, v, &resp.Diagnostics)
 }
+
+// importingKey marks, in private state, a resource just imported: its first
+// read fills what the import ID did not carry.
+const importingKey = "importing"
 
 func (r *genericResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	v := r.load(ctx, req.State.GetAttribute, &resp.Diagnostics)
@@ -1226,8 +1270,24 @@ func (r *genericResource) Read(ctx context.Context, req resource.ReadRequest, re
 		resp.State.RemoveResource(ctx)
 		return
 	}
-	r.apply(v, obj, &resp.Diagnostics)
+	marker, d := req.Private.GetKey(ctx, importingKey)
+	resp.Diagnostics.Append(d...)
+	r.apply(v, obj, len(marker) > 0, &resp.Diagnostics)
 	r.save(ctx, &resp.State, v, &resp.Diagnostics)
+	if len(marker) > 0 {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, importingKey, nil)...)
+	}
+}
+
+func (r *genericResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	if r.s.Validate == nil {
+		return
+	}
+	v := r.load(ctx, req.Config.GetAttribute, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	r.s.Validate(v, &resp.Diagnostics)
 }
 
 func (r *genericResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -1266,13 +1326,19 @@ func (r *genericResource) Update(ctx context.Context, req resource.UpdateRequest
 		}
 		obj = fresh
 	}
-	r.apply(v, obj, &resp.Diagnostics)
+	r.apply(v, obj, false, &resp.Diagnostics)
 	r.save(ctx, &resp.State, v, &resp.Diagnostics)
 }
 
 func (r *genericResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	v := r.load(ctx, req.State.GetAttribute, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if r.s.DeleteHook != nil {
+		if err := r.s.DeleteHook(ctx, r.client, v, r.serverID(v)); err != nil && !client.IsNotFound(err) {
+			addAPIError(&resp.Diagnostics, "Unable to delete "+r.what(v), err, r.s.Perms)
+		}
 		return
 	}
 	o := r.s.Delete
@@ -1283,13 +1349,14 @@ func (r *genericResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if o.Body != nil {
 		in = o.Body
 	}
-	_, err := r.client.Raw(ctx, o.Method, r.render(o, v, r.serverID(v)), nil, in)
+	_, err := r.client.Raw(ctx, o.Method, r.render(o, v, r.serverID(v)), o.query(v), in)
 	if err != nil && !client.IsNotFound(err) {
 		addAPIError(&resp.Diagnostics, "Unable to delete "+r.what(v), err, r.s.Perms)
 	}
 }
 
 func (r *genericResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, importingKey, []byte("true"))...)
 	s := r.s
 	want := len(s.Parents)
 	if !s.Singleton {
@@ -1362,14 +1429,6 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// unixMillis formats a millisecond timestamp the API returns as RFC 3339.
-func unixMillis(raw any) any {
-	if n, ok := numberInt(raw); ok {
-		return time.UnixMilli(n).UTC().Format(time.RFC3339)
-	}
-	return raw
 }
 
 // sameInstant reports whether two RFC 3339 strings name the same time.
