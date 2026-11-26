@@ -314,6 +314,7 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 		if v, ok := raw["value"]; ok {
 			e.Value = reencode(v)
 		}
+		f.st.touchFlagEnv(e)
 		writeJSON(w, 200, e)
 	})
 
@@ -651,6 +652,11 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 		notFound(w, "project group", r.PathValue("slug"))
 	})
 	h("GET /api/project-groups/{gid}", func(w http.ResponseWriter, r *http.Request) {
+		if f.st.failNextGroupGet {
+			f.st.failNextGroupGet = false
+			problem(w, 500, "Internal Server Error", "Project group "+r.PathValue("gid")+" could not be loaded")
+			return
+		}
 		if g := group(w, r); g != nil {
 			writeJSON(w, 200, g)
 		}
@@ -696,7 +702,12 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 			o.Projects = slices.DeleteFunc(o.Projects, func(m client.ProjectGroupMember) bool { return m.ID == pid })
 		}
 		p := f.projects[pid]
-		g.Projects = append(g.Projects, client.ProjectGroupMember{ID: pid, Name: p.Name, Slug: p.Slug})
+		m := client.ProjectGroupMember{ID: pid, Name: p.Name, Slug: p.Slug}
+		if !f.st.old {
+			m.InheritsRepository = ptr(false)
+		}
+		g.Projects = append(g.Projects, m)
+		f.st.failNextGroupGet = f.st.failGroupGetAfterAdd
 		writeJSON(w, 200, g)
 	})
 	h("DELETE /api/project-groups/{gid}/projects/{pid}", func(w http.ResponseWriter, r *http.Request) {

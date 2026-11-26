@@ -347,3 +347,46 @@ func TestIsUnsupportedDistinguishesMissingRoutes(t *testing.T) {
 		t.Fatalf("a missing resource must not look unsupported: %v", err)
 	}
 }
+
+// Requests that restart a service before Temps answers get the longer
+// SlowTimeout; every other request keeps Timeout.
+func TestServiceRestartingRequestsUseSlowTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"tls":{"mode":"available"}}`)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(Config{Endpoint: srv.URL, APIKey: testKey, Timeout: 50 * time.Millisecond,
+		SlowTimeout: 5 * time.Second, MaxRetries: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := c.ApplyServiceHealthcheck(ctx, 1); err != nil {
+		t.Fatalf("applying a healthcheck timed out under Timeout: %v", err)
+	}
+	if tls, err := c.SetServiceTLS(ctx, 1, "available"); err != nil || tls.Mode != "available" {
+		t.Fatalf("changing the TLS mode: %+v, %v", tls, err)
+	}
+	if _, err := c.GetServiceTLS(ctx, 1); err == nil || !strings.Contains(err.Error(), "Timeout") {
+		t.Fatalf("a regular request should time out after Timeout, got %v", err)
+	}
+}
+
+func TestSlowTimeoutIsNeverShorterThanTimeout(t *testing.T) {
+	for _, tc := range []struct{ timeout, slow, want time.Duration }{
+		{0, 0, DefaultSlowTimeout},
+		{time.Minute, 10 * time.Second, time.Minute},
+		{10 * time.Minute, 0, 10 * time.Minute},
+		{time.Minute, 5 * time.Minute, 5 * time.Minute},
+	} {
+		c, err := New(Config{Endpoint: "https://temps.example.com", APIKey: testKey, Timeout: tc.timeout, SlowTimeout: tc.slow})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.slow.Timeout != tc.want {
+			t.Errorf("Timeout %v, SlowTimeout %v: slow timeout is %v, want %v", tc.timeout, tc.slow, c.slow.Timeout, tc.want)
+		}
+	}
+}

@@ -3,14 +3,14 @@
 page_title: "temps_project_group_membership Resource - temps"
 subcategory: ""
 description: |-
-  Puts a project in a project group. A project belongs to at most one group; creating this resource for a project that is already in a group fails instead of moving it.
+  Puts a project in a project group, optionally following the group's repository. A project belongs to at most one group; creating this resource for a project that is already in a group fails instead of moving it.
   Import with <group_id>/<project_id>.
   Required API key permissions: projects:read, projects:write.
 ---
 
 # temps_project_group_membership (Resource)
 
-Puts a project in a project group. A project belongs to at most one group; creating this resource for a project that is already in a group fails instead of moving it.
+Puts a project in a project group, optionally following the group's repository. A project belongs to at most one group; creating this resource for a project that is already in a group fails instead of moving it.
 
 Import with `<group_id>/<project_id>`.
 
@@ -19,11 +19,15 @@ Required API key permissions: `projects:read`, `projects:write`.
 ## Example Usage
 
 ```terraform
-# A project belongs to at most one group: adding it here moves it out of any
-# other group.
+# A project belongs to at most one group: creating this fails if the project
+# is already in another group.
 resource "temps_project_group_membership" "web" {
   group_id   = temps_project_group.web.id
   project_id = temps_project.web.id
+
+  # Build from the group's repository and branch, in the project's own
+  # directory.
+  inherit_repository = true
 }
 ```
 
@@ -34,6 +38,10 @@ resource "temps_project_group_membership" "web" {
 
 - `group_id` (Number) ID of the project group.
 - `project_id` (Number) ID of the project.
+
+### Optional
+
+- `inherit_repository` (Boolean) Whether the project follows the group's `repository`: `true` points the project at the group's repository and branch now (keeping its own directory) and on every later change; `false` keeps its current git settings and stops following. The group must have a repository to follow, and the project must deploy from Git. Left out, Terraform leaves it as it is. Removing the group's repository sets it to `false` on every member. Leave `repo_owner`, `repo_name`, `main_branch` and `git_provider_connection_id` out of the project's own `temps_project` while it follows, as the group sets them. Read back from `GET /project-groups/{id}`. Needs `projects:read`, `projects:write`, `git_connections:read`, `git_repositories:read` to change.
 
 ### Read-Only
 

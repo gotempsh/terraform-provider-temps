@@ -14,7 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -164,3 +169,59 @@ func (notBlank) ValidateString(_ context.Context, req validator.StringRequest, r
 
 // joinTicks renders values as "a`, `b" for use inside a pair of backticks.
 func joinTicks(vals []string) string { return strings.Join(vals, "`, `") }
+
+// settingOf plans a nested attribute of an optional and computed settings
+// object. With the object configured, a value left out is planned as null
+// (it resets to the server default). With the object left out, the value
+// in state is kept, so settings Terraform does not manage never show a diff.
+//
+// The nested attributes have to be computed: Terraform otherwise takes an
+// object holding values of optional-only attributes as configured before,
+// and plans it away when the configuration leaves it out.
+type settingOf struct {
+	// Default is planned instead of null for a value left out of a
+	// configured object, when the server never stores null.
+	Default attr.Value
+}
+
+func (settingOf) Description(context.Context) string {
+	return "Left out of a configured object, the value is reset; with the object left out, the current value is kept."
+}
+func (m settingOf) MarkdownDescription(ctx context.Context) string { return m.Description(ctx) }
+
+// plan returns the planned value, or nil to keep the framework's.
+func (m settingOf) plan(ctx context.Context, cfg tfsdk.Config, p path.Path, config, state attr.Value, null attr.Value, diags *diag.Diagnostics) attr.Value {
+	if !config.IsNull() {
+		return nil
+	}
+	var parent types.Object
+	diags.Append(cfg.GetAttribute(ctx, p.ParentPath(), &parent)...)
+	if parent.IsNull() {
+		if state.IsNull() {
+			return nil
+		}
+		return state
+	}
+	if m.Default != nil {
+		return m.Default
+	}
+	return null
+}
+
+func (m settingOf) PlanModifyInt64(ctx context.Context, req planmodifier.Int64Request, resp *planmodifier.Int64Response) {
+	if v := m.plan(ctx, req.Config, req.Path, req.ConfigValue, req.StateValue, types.Int64Null(), &resp.Diagnostics); v != nil {
+		resp.PlanValue = v.(types.Int64)
+	}
+}
+
+func (m settingOf) PlanModifyBool(ctx context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
+	if v := m.plan(ctx, req.Config, req.Path, req.ConfigValue, req.StateValue, types.BoolNull(), &resp.Diagnostics); v != nil {
+		resp.PlanValue = v.(types.Bool)
+	}
+}
+
+func (m settingOf) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if v := m.plan(ctx, req.Config, req.Path, req.ConfigValue, req.StateValue, types.StringNull(), &resp.Diagnostics); v != nil {
+		resp.PlanValue = v.(types.String)
+	}
+}

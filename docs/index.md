@@ -43,4 +43,4 @@ variable "temps_api_key" {
 - `api_key` (String, Sensitive) Temps API key (`tk_...`), sent as a bearer token and never logged. Can also be set with the `TEMPS_API_KEY` environment variable.
 - `endpoint` (String) Base URL of the Temps server, for example `https://temps.example.com`. `/api` is appended when missing. Can also be set with the `TEMPS_ENDPOINT` environment variable.
 - `max_retries` (Number) How many times a request is retried after a refused connection, HTTP 429, or (for idempotent requests) HTTP 502-504 and dropped connections, with bounded exponential backoff. Defaults to `4`; `0` uses the default, set `-1` to disable retries.
-- `request_timeout_seconds` (Number) Timeout for a single API request, in seconds. Defaults to `60`.
+- `request_timeout_seconds` (Number) Timeout for a single API request, in seconds. Defaults to `60`. Requests that restart a service before Temps answers (applying a healthcheck, changing the TLS mode) wait at least 180 seconds.

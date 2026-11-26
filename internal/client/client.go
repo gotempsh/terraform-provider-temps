@@ -26,6 +26,10 @@ import (
 const (
 	// DefaultTimeout bounds a single HTTP request, including reading the body.
 	DefaultTimeout = 60 * time.Second
+	// DefaultSlowTimeout bounds a request that restarts a service before it
+	// answers (applying a healthcheck, changing the TLS mode). Temps waits
+	// up to 120 seconds for the database to be ready again.
+	DefaultSlowTimeout = 180 * time.Second
 	// DefaultMaxRetries is how many times a retryable failure is retried.
 	DefaultMaxRetries = 4
 
@@ -46,6 +50,9 @@ type Config struct {
 	UserAgent string
 	// Timeout bounds each request. Zero uses DefaultTimeout.
 	Timeout time.Duration
+	// SlowTimeout bounds requests that restart a service before answering;
+	// it is never shorter than Timeout. Zero uses DefaultSlowTimeout.
+	SlowTimeout time.Duration
 	// MaxRetries bounds retries of retryable failures. Negative disables
 	// retries; zero uses DefaultMaxRetries.
 	MaxRetries int
@@ -61,6 +68,7 @@ type Client struct {
 	apiKey     string
 	userAgent  string
 	http       *http.Client
+	slow       *http.Client // for requests that restart a service
 	maxRetries int
 	minBackoff time.Duration
 	maxBackoff time.Duration
@@ -94,9 +102,14 @@ func New(cfg Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	hc := cfg.HTTPClient
+	slowTimeout := max(cfg.SlowTimeout, timeout)
+	if cfg.SlowTimeout <= 0 {
+		slowTimeout = max(DefaultSlowTimeout, timeout)
+	}
+	hc, slow := cfg.HTTPClient, cfg.HTTPClient
 	if hc == nil {
 		hc = &http.Client{Timeout: timeout}
+		slow = &http.Client{Timeout: slowTimeout}
 	}
 	retries := cfg.MaxRetries
 	switch {
@@ -116,7 +129,7 @@ func New(cfg Config) (*Client, error) {
 	if ua == "" {
 		ua = "terraform-provider-temps"
 	}
-	return &Client{base: u, apiKey: cfg.APIKey, userAgent: ua, http: hc, maxRetries: retries, minBackoff: minB, maxBackoff: maxB}, nil
+	return &Client{base: u, apiKey: cfg.APIKey, userAgent: ua, http: hc, slow: slow, maxRetries: retries, minBackoff: minB, maxBackoff: maxB}, nil
 }
 
 // BaseURL returns the API base URL (ending in /api).
@@ -193,6 +206,16 @@ type problem struct {
 // do sends one logical request, retrying retryable failures, and decodes a
 // 2xx JSON body into out (when out is non-nil).
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, in, out any) error {
+	return c.doWith(ctx, c.http, method, path, query, in, out)
+}
+
+// doSlow is do for a request that restarts a service before Temps answers,
+// under the longer SlowTimeout.
+func (c *Client) doSlow(ctx context.Context, method, path string, query url.Values, in, out any) error {
+	return c.doWith(ctx, c.slow, method, path, query, in, out)
+}
+
+func (c *Client) doWith(ctx context.Context, hc *http.Client, method, path string, query url.Values, in, out any) error {
 	var payload []byte
 	if in != nil {
 		var err error
@@ -208,7 +231,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 
 	for attempt := 0; ; attempt++ {
-		resp, err := c.send(ctx, method, u.String(), payload)
+		resp, err := c.send(ctx, hc, method, u.String(), payload)
 		if err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("%s %s: %w", method, path, ctx.Err())
@@ -257,7 +280,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 }
 
-func (c *Client) send(ctx context.Context, method, target string, payload []byte) (*http.Response, error) {
+func (c *Client) send(ctx context.Context, hc *http.Client, method, target string, payload []byte) (*http.Response, error) {
 	var body io.Reader
 	if payload != nil {
 		body = bytes.NewReader(payload)
@@ -272,7 +295,7 @@ func (c *Client) send(ctx context.Context, method, target string, payload []byte
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return c.http.Do(req)
+	return hc.Do(req)
 }
 
 func readAPIError(resp *http.Response, method, path string) *APIError {

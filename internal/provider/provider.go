@@ -69,9 +69,10 @@ func (p *tempsProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp
 					"Can also be set with the `" + envAPIKey + "` environment variable.",
 			},
 			"request_timeout_seconds": schema.Int64Attribute{
-				Optional:            true,
-				MarkdownDescription: "Timeout for a single API request, in seconds. Defaults to `60`.",
-				Validators:          []validator.Int64{int64validator.Between(1, 3600)},
+				Optional: true,
+				MarkdownDescription: "Timeout for a single API request, in seconds. Defaults to `60`. Requests that restart a " +
+					"service before Temps answers (applying a healthcheck, changing the TLS mode) wait at least 180 seconds.",
+				Validators: []validator.Int64{int64validator.Between(1, 3600)},
 			},
 			"max_retries": schema.Int64Attribute{
 				Optional: true,
@@ -166,6 +167,7 @@ func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource 
 		newEdgeRuleResource,
 		newAPIKeyResource,
 		newInboundFilterResource,
+		newDomainResource, // domainSpec plus certificate settings
 	}
 	for _, s := range genericSpecs {
 		rs = append(rs, genericFactory(s))
@@ -185,7 +187,6 @@ var genericSpecs = []*gspec{
 	globalIPRuleSpec,
 	dnsProviderSpec,
 	dnsProviderDomainSpec,
-	domainSpec,
 	emailProviderSpec,
 	emailDomainSpec,
 	emailDomainProjectSpec,

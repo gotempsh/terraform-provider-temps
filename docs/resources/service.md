@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   A managed service that Temps runs and operates: PostgreSQL, Redis, MongoDB, MariaDB or an S3-compatible object store. Link it to projects with temps_service_link to inject its connection variables.
   Creation is asynchronous; the provider waits until the service is running (see timeouts). deletion_protection defaults to true: set it to false and apply before destroying, because destroying a service deletes its data.
+  Container resource limits (memory, CPU, /dev/shm) are not managed here: Temps has no endpoint that returns the configured limits, only the ones a running container has, so they could not be checked for drift.
   Required API key permissions: external_services:create, external_services:read, external_services:write, external_services:delete.
 ---
 
@@ -13,6 +14,8 @@ description: |-
 A managed service that Temps runs and operates: PostgreSQL, Redis, MongoDB, MariaDB or an S3-compatible object store. Link it to projects with `temps_service_link` to inject its connection variables.
 
 Creation is asynchronous; the provider waits until the service is `running` (see `timeouts`). `deletion_protection` defaults to `true`: set it to `false` and apply before destroying, because destroying a service deletes its data.
+
+Container resource limits (memory, CPU, `/dev/shm`) are not managed here: Temps has no endpoint that returns the configured limits, only the ones a running container has, so they could not be checked for drift.
 
 Required API key permissions: `external_services:create`, `external_services:read`, `external_services:write`, `external_services:delete`.
 
@@ -30,6 +33,23 @@ resource "temps_service" "db" {
 
   # Refuse terraform destroy until this is set to false.
   deletion_protection = true
+
+  # Healthcheck overrides; values left out inherit the instance default.
+  # They apply when the container is next recreated, or now (restarting the
+  # service briefly) with apply_immediately.
+  health_check = {
+    interval_secs = 30
+    timeout_secs  = 5
+    retries       = 5
+  }
+
+  # Offer TLS while still accepting plaintext. Changing it restarts the database.
+  tls_mode = "available"
+
+  # Cap container log ingestion; 0 lifts a limit, left out uses the platform budget.
+  log_ingestion = {
+    lines_per_sec = 2000
+  }
 
   timeouts {
     create = "20m"
@@ -49,16 +69,42 @@ resource "temps_service" "db" {
 
 - `deletion_protection` (Boolean) Refuse to destroy the service while `true` (default).
 - `docker_image` (String) Docker image the service runs. Changing it upgrades the service in place.
+- `health_check` (Attributes) The service's own Docker healthcheck overrides. Left out, Terraform does not manage them and keeps whatever the service has. Once set, every value you leave out inherits the instance default (or the engine's built-in value); `health_check = {}` clears them all. Docker cannot change a running container's healthcheck, so a change applies when the container is next recreated, or right away with `apply_immediately`. Only standalone services whose engine has a Docker healthcheck (not S3-compatible stores, clusters or services on worker nodes) take overrides; Temps refuses them otherwise. Read back from `GET /external-services/{id}/healthcheck`. (see [below for nested schema](#nestedatt--health_check))
+- `log_ingestion` (Attributes) The service's own container log ingestion budget. Left out, Terraform keeps the service's current budget. Once set, a value you leave out uses the platform budget (Settings > Monitoring); `log_ingestion = {}` returns both to it. Running containers pick a change up within a minute; nothing restarts. Read back from `GET /external-services/{id}/log-ingestion`. (see [below for nested schema](#nestedatt--log_ingestion))
 - `node_id` (Number) Node to run the service on; the control plane when unset. Changing it replaces the service.
 - `parameters` (Map of String, Sensitive) Engine parameters as strings, for example `database`, `username`, `password`, `max_connections`. The provider converts each value to the type the server's parameter schema declares. Sensitive parameters (such as `password`) are masked by the server and never cause drift; other parameters you set are read back. Changing a parameter the server cannot change after creation (`database`, `username`, `password`, `host`, or one its schema marks read-only) replaces the service. Generated values (an auto-generated password) are not exposed here: use `temps_service_connection`.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
+- `tls_mode` (String) Managed server TLS: `off`, `available` (TLS offered, plaintext still accepted) or `required` (which current Temps servers refuse). Left out, Terraform keeps the service's current mode. **Changing it restarts a standalone database**; a cluster's data nodes switch certificates in place. Read back from `GET /external-services/{id}/tls`.
 - `topology` (String) Deployment topology, `standalone` by default. Changing it replaces the service.
 - `version` (String) Engine version chosen at creation. The API cannot change it in place, so changing it replaces the service; to upgrade in place change `docker_image` instead.
+- `workload_mode` (String) Operator-only migration control for how the database's container is built: `legacy` (the default), `shadow` or `enforce`. Reading and changing it needs an API key of an instance administrator, so it is only read back (from `GET /external-services/{id}/workload-mode`) while it is set. Changing it does not restart anything: the container follows the mode when it is next recreated from its workload spec, a step an operator confirms with the Temps CLI. Removing the argument stops managing the mode and leaves the database's current mode in place.
 
 ### Read-Only
 
 - `id` (String) Numeric service ID.
 - `status` (String) Last observed status, for example `running`.
+
+<a id="nestedatt--health_check"></a>
+### Nested Schema for `health_check`
+
+Optional:
+
+- `apply_immediately` (Boolean) When `true`, recreate the container right after the overrides change so they take effect now. **The service restarts briefly** (its volumes and configuration are kept). Temps only does this for a running standalone service on the control plane. Not sent to Temps; while Temps reports overrides waiting for a recreate (an earlier recreate failed, or they were saved elsewhere) and the service can be recreated now, it reads back as `false`, so the next apply recreates it.
+- `interval_secs` (Number) Seconds between checks once the container is healthy (5–3600).
+- `retries` (Number) Consecutive failed checks that make the container unhealthy (1–10).
+- `start_interval_secs` (Number) Seconds between checks while the container starts (1–60).
+- `start_period_secs` (Number) Seconds after start during which failed checks do not count (0–600).
+- `timeout_secs` (Number) Seconds one check may run (1–60); it must stay shorter than the interval.
+
+
+<a id="nestedatt--log_ingestion"></a>
+### Nested Schema for `log_ingestion`
+
+Optional:
+
+- `kib_per_sec` (Number) KiB of log text per second per container (0–1,048,576); `0` lifts the limit.
+- `lines_per_sec` (Number) Log lines per second per container (0–1,000,000); `0` lifts the limit.
+
 
 <a id="nestedblock--timeouts"></a>
 ### Nested Schema for `timeouts`

@@ -15,6 +15,29 @@ type ProjectGroupMember struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
 	Slug string `json:"slug"`
+	// InheritsRepository is whether the project follows the group's
+	// repository and branch; nil when the server predates group repositories.
+	InheritsRepository *bool `json:"inherits_repository,omitempty"`
+}
+
+// ProjectGroupRepository is the repository a group's projects can follow
+// (monorepos). Exactly one of GitProviderConnectionID and PublicProvider is
+// set; both are null when the connection was deleted.
+type ProjectGroupRepository struct {
+	RepoOwner               string  `json:"repo_owner"`
+	RepoName                string  `json:"repo_name"`
+	MainBranch              string  `json:"main_branch"`
+	GitProviderConnectionID *int64  `json:"git_provider_connection_id"`
+	PublicProvider          *string `json:"public_provider"`
+}
+
+// GroupMemberSync is what happened to one following project when the
+// group's repository changed. With Error set, the project still points at
+// its previous repository or branch.
+type GroupMemberSync struct {
+	ProjectID int64   `json:"project_id"`
+	Name      string  `json:"name"`
+	Error     *string `json:"error"`
 }
 
 // ProjectGroup groups projects that share environment variables.
@@ -24,17 +47,23 @@ type ProjectGroup struct {
 	Slug        string               `json:"slug"`
 	Description *string              `json:"description"`
 	Projects    []ProjectGroupMember `json:"projects"`
+	// Repository is null when the group has none (and on servers that
+	// predate group repositories).
+	Repository *ProjectGroupRepository `json:"repository"`
+}
+
+// Member returns the group's entry for the project, or nil.
+func (g *ProjectGroup) Member(projectID int64) *ProjectGroupMember {
+	for i := range g.Projects {
+		if g.Projects[i].ID == projectID {
+			return &g.Projects[i]
+		}
+	}
+	return nil
 }
 
 // HasProject reports whether the group lists the project.
-func (g *ProjectGroup) HasProject(projectID int64) bool {
-	for _, p := range g.Projects {
-		if p.ID == projectID {
-			return true
-		}
-	}
-	return false
-}
+func (g *ProjectGroup) HasProject(projectID int64) bool { return g.Member(projectID) != nil }
 
 // ProjectGroupRequest creates or partially updates a project group.
 type ProjectGroupRequest struct {
@@ -106,6 +135,33 @@ func (c *Client) AddProjectToGroup(ctx context.Context, groupID, projectID int64
 // RemoveProjectFromGroup removes a project from a group.
 func (c *Client) RemoveProjectFromGroup(ctx context.Context, groupID, projectID int64) error {
 	return c.do(ctx, http.MethodDelete, idPath("/project-groups/%d/projects/%d", groupID, projectID), nil, nil, nil)
+}
+
+// SetProjectGroupRepository sets the group's repository and writes it
+// through to every project that follows it; each follower's outcome is
+// returned.
+func (c *Client) SetProjectGroupRepository(ctx context.Context, groupID int64, repo ProjectGroupRepository) (*ProjectGroup, []GroupMemberSync, error) {
+	var out struct {
+		Group    ProjectGroup      `json:"group"`
+		Services []GroupMemberSync `json:"services"`
+	}
+	err := c.do(ctx, http.MethodPut, idPath("/project-groups/%d/repository", groupID), nil, repo, &out)
+	return &out.Group, out.Services, err
+}
+
+// ClearProjectGroupRepository removes the group's repository. Followers keep
+// their current git settings and stop following.
+func (c *Client) ClearProjectGroupRepository(ctx context.Context, groupID int64) (*ProjectGroup, error) {
+	var g ProjectGroup
+	return &g, c.do(ctx, http.MethodDelete, idPath("/project-groups/%d/repository", groupID), nil, nil, &g)
+}
+
+// SetRepositoryInheritance makes a member follow the group's repository
+// (pointing it there now) or stop following it (keeping its settings).
+func (c *Client) SetRepositoryInheritance(ctx context.Context, groupID, projectID int64, inherit bool) (*ProjectGroup, error) {
+	var g ProjectGroup
+	path := idPath("/project-groups/%d/projects/%d/repository-inheritance", groupID, projectID)
+	return &g, c.do(ctx, http.MethodPut, path, nil, map[string]bool{"inherit": inherit}, &g)
 }
 
 // ProjectGroupVariable is an environment variable shared by a group's projects.

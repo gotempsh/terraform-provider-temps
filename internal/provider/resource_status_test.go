@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"testing"
 
@@ -321,4 +322,66 @@ func TestUnitStatusPageDomain(t *testing.T) {
 func TestAccStatusPageDomain(t *testing.T) {
 	h := accHarness(t)
 	h.run(domainSteps(h), h.domainDestroyed())
+}
+
+// setPagePublished flips the fake page's published state, as the console
+// would, and returns the page ID.
+func (h *harness) setPagePublished(published bool) int64 {
+	var id int64
+	h.fake.with(func() {
+		for _, p := range h.fake.pages {
+			p.p.IsPublished = published
+			id = p.p.ID
+		}
+	})
+	return id
+}
+
+func (h *harness) pagePublished(want bool) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		var got bool
+		h.fake.with(func() {
+			for _, p := range h.fake.pages {
+				got = p.p.IsPublished
+			}
+		})
+		if got != want {
+			return fmt.Errorf("page is_published = %t, want %t", got, want)
+		}
+		return nil
+	}
+}
+
+// published is read back from the page: a change made in the console is
+// planned and reverted, and a refused publish fails the apply.
+func TestUnitStatusPagePublishedDrift(t *testing.T) {
+	h := unitHarness(t)
+	h.run([]resource.TestStep{
+		{Config: statusPageConfig(h, "Example status", true, "Web", "auto"), Check: h.pagePublished(true)},
+		{
+			PreConfig:        func() { h.setPagePublished(false) },
+			Config:           statusPageConfig(h, "Example status", true, "Web", "auto"),
+			ConfigPlanChecks: expectAction(pageAddr, plancheck.ResourceActionUpdate),
+			Check:            resource.ComposeAggregateTestCheckFunc(resource.TestCheckResourceAttr(pageAddr, "published", "true"), h.pagePublished(true)),
+		},
+		{
+			PreConfig:        func() { h.setPagePublished(true) },
+			Config:           statusPageConfig(h, "Example status", false, "Web", "auto"),
+			ConfigPlanChecks: expectAction(pageAddr, plancheck.ResourceActionUpdate),
+			Check:            resource.ComposeAggregateTestCheckFunc(resource.TestCheckResourceAttr(pageAddr, "published", "false"), h.pagePublished(false)),
+		},
+		{
+			PreConfig: func() {
+				id := h.setPagePublished(false)
+				h.fake.fail(fmt.Sprintf("POST /api/status-pages/%d/publish", id), 403, "Forbidden", "missing status_pages:write")
+			},
+			Config:      statusPageConfig(h, "Example status", true, "Web", "auto"),
+			ExpectError: regexp.MustCompile(`(?s)Unable to change the published state of Temps status page.*403`),
+		},
+		{
+			Config:           statusPageConfig(h, "Example status", true, "Web", "auto"),
+			ConfigPlanChecks: expectAction(pageAddr, plancheck.ResourceActionUpdate),
+			Check:            h.pagePublished(true),
+		},
+	}, h.statusPageDestroyed())
 }

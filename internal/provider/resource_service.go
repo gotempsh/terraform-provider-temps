@@ -55,6 +55,10 @@ type serviceModel struct {
 	Parameters         types.Map      `tfsdk:"parameters"`
 	DeletionProtection types.Bool     `tfsdk:"deletion_protection"`
 	Status             types.String   `tfsdk:"status"`
+	HealthCheck        types.Object   `tfsdk:"health_check"`
+	TLSMode            types.String   `tfsdk:"tls_mode"`
+	LogIngestion       types.Object   `tfsdk:"log_ingestion"`
+	WorkloadMode       types.String   `tfsdk:"workload_mode"`
 	Timeouts           timeouts.Value `tfsdk:"timeouts"`
 }
 
@@ -69,6 +73,8 @@ func (r *serviceResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 			"S3-compatible object store. Link it to projects with `temps_service_link` to inject its connection variables.\n\n" +
 			"Creation is asynchronous; the provider waits until the service is `running` (see `timeouts`). " +
 			"`deletion_protection` defaults to `true`: set it to `false` and apply before destroying, because destroying a service deletes its data.\n\n" +
+			"Container resource limits (memory, CPU, `/dev/shm`) are not managed here: Temps has no endpoint that returns " +
+			"the configured limits, only the ones a running container has, so they could not be checked for drift.\n\n" +
 			"Required API key permissions: " + permList(servicePermissions) + ".",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{Computed: true, MarkdownDescription: "Numeric service ID.",
@@ -123,6 +129,9 @@ func (r *serviceResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 		Blocks: map[string]schema.Block{
 			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true, Update: true, Delete: true}),
 		},
+	}
+	for k, a := range serviceSettingsAttributes() {
+		resp.Schema.Attributes[k] = a
 	}
 }
 
@@ -375,6 +384,27 @@ func (r *serviceResource) Create(ctx context.Context, req resource.CreateRequest
 	// Track the service right away so a failed wait leaves it in state (tainted).
 	plan.ID = types.StringValue(formatID(s.ID))
 	details, err := r.waitRunning(ctx, s.ID, s.Name)
+	if err == nil {
+		// Settings on their own endpoints need the service to exist and run.
+		var settingDiags diag.Diagnostics
+		if r.applySettings(ctx, s.ID, &plan, nil, &settingDiags) {
+			details, err = r.waitRunning(ctx, s.ID, s.Name)
+		}
+		if err == nil {
+			// Record what the service has, even after a refused setting.
+			var readDiags diag.Diagnostics
+			r.readSettings(ctx, s.ID, &plan, false, &readDiags)
+			if !settingDiags.HasError() {
+				settingDiags.Append(readDiags...)
+			}
+		}
+		// An error taints the new service, and replacing it destroys its
+		// data or, under deletion_protection, fails: say how to keep it.
+		appendWithNote(&resp.Diagnostics, settingDiags, "Temps service "+plan.Name.String()+" was created and is kept in state, "+
+			"but Terraform marks it tainted, so the next apply would replace it (deleting its data, or failing while "+
+			"deletion_protection is on). To keep it, run terraform untaint on this resource, fix the setting and apply again.")
+	}
+	plan.nullSettings()
 	if details != nil {
 		plan.fromAPI(details, configured)
 	} else {
@@ -409,6 +439,15 @@ func (r *serviceResource) Read(ctx context.Context, req resource.ReadRequest, re
 	state.fromAPI(d, r.params(ctx, &state, &resp.Diagnostics))
 	if state.DeletionProtection.IsNull() {
 		state.DeletionProtection = types.BoolValue(true) // import
+	}
+	imported, diags := req.Private.GetKey(ctx, privateImported)
+	resp.Diagnostics.Append(diags...)
+	r.readSettings(ctx, id, &state, len(imported) > 0, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if len(imported) > 0 {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateImported, nil)...)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -463,6 +502,20 @@ func (r *serviceResource) Update(ctx context.Context, req resource.UpdateRequest
 		}
 		mutated = true
 	}
+	if mutated {
+		// A parameter change or an upgrade restarts the service: let it
+		// settle before changing settings that may restart it again.
+		if _, err := r.waitRunning(ctx, id, name); err != nil {
+			addAPIError(&resp.Diagnostics, "Temps service "+formatID(id)+" did not become ready after update", err, servicePermissions)
+			return
+		}
+	}
+	if r.applySettings(ctx, id, &plan, &state, &resp.Diagnostics) {
+		mutated = true
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	var details *client.ServiceDetails
 	if mutated {
@@ -475,6 +528,10 @@ func (r *serviceResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 	plan.fromAPI(details, configured)
+	r.readSettings(ctx, id, &plan, false, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -487,7 +544,9 @@ func (r *serviceResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if state.DeletionProtection.ValueBool() {
 		resp.Diagnostics.AddError("Temps service is protected against deletion",
 			fmt.Sprintf("temps_service %s (id %s) has deletion_protection = true. Destroying it deletes its data. "+
-				"Set deletion_protection = false, run terraform apply, then destroy again.", state.Name, state.ID.ValueString()))
+				"Set deletion_protection = false, run terraform apply, then destroy again. If Terraform is replacing it because "+
+				"it is tainted (a setting failed when it was created), run terraform untaint on this resource instead to keep it.",
+				state.Name, state.ID.ValueString()))
 		return
 	}
 	timeout, d := state.Timeouts.Delete(ctx, defaultServiceTimeout)
@@ -530,4 +589,16 @@ func (r *serviceResource) ImportState(ctx context.Context, req resource.ImportSt
 		return
 	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateImported, []byte("true"))...)
+}
+
+// appendWithNote adds diags to out, ending the detail of every error with note.
+func appendWithNote(out *diag.Diagnostics, diags diag.Diagnostics, note string) {
+	for _, d := range diags {
+		if d.Severity() == diag.SeverityError {
+			out.AddError(d.Summary(), d.Detail()+"\n\n"+note)
+			continue
+		}
+		out.Append(d)
+	}
 }

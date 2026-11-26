@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -43,10 +44,11 @@ type projectGroupResource struct{ resourceBase }
 func newProjectGroupResource() resource.Resource { return &projectGroupResource{} }
 
 type projectGroupModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Slug        types.String `tfsdk:"slug"`
-	Description types.String `tfsdk:"description"`
+	ID          types.String          `tfsdk:"id"`
+	Name        types.String          `tfsdk:"name"`
+	Slug        types.String          `tfsdk:"slug"`
+	Description types.String          `tfsdk:"description"`
+	Repository  *groupRepositoryModel `tfsdk:"repository"`
 }
 
 func (r *projectGroupResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -56,8 +58,10 @@ func (r *projectGroupResource) Metadata(_ context.Context, req resource.Metadata
 func (r *projectGroupResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "A group of projects that share environment variables (`temps_project_group_variable`). " +
-			"Add projects with `temps_project_group_membership`. Deleting a group keeps its projects.\n\n" +
-			"Import with the group ID.\n\nRequired API key permissions: " + permList(projectGroupPermissions) + ".",
+			"Add projects with `temps_project_group_membership`. A group can also hold the repository its projects follow " +
+			"(monorepos). Deleting a group keeps its projects.\n\n" +
+			"Import with the group ID.\n\nRequired API key permissions: " + permList(projectGroupPermissions) +
+			"; `repository` also needs " + permList(groupRepositoryPermissions[2:]) + ".",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{Computed: true, MarkdownDescription: "Numeric group ID.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
@@ -69,10 +73,14 @@ func (r *projectGroupResource) Schema(_ context.Context, _ resource.SchemaReques
 				Validators:          []validator.String{stringvalidator.RegexMatches(teamSlugRE, "must contain only lower-case letters, digits and '-'")}},
 			"description": schema.StringAttribute{Optional: true, MarkdownDescription: "What the group is for.",
 				Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"repository": groupRepositoryAttribute(),
 		},
 	}
 }
 
+// fromAPI copies the group. The repository is read only while managed: an
+// import leaves it out, so state holds a repository only once the
+// configuration has set it, and removing the argument then removes it.
 func (m *projectGroupModel) fromAPI(g *client.ProjectGroup) {
 	m.ID = types.StringValue(formatID(g.ID))
 	m.Name = types.StringValue(g.Name)
@@ -81,6 +89,9 @@ func (m *projectGroupModel) fromAPI(g *client.ProjectGroup) {
 		m.Description = types.StringNull()
 	} else {
 		m.Description = types.StringValue(*g.Description)
+	}
+	if m.Repository != nil {
+		m.Repository = groupRepositoryFromAPI(g.Repository)
 	}
 }
 
@@ -94,6 +105,15 @@ func (r *projectGroupResource) Create(ctx context.Context, req resource.CreateRe
 	if err != nil {
 		addAPIError(&resp.Diagnostics, "Unable to create project group "+plan.Name.String(), err, projectGroupPermissions)
 		return
+	}
+	if plan.Repository != nil {
+		if updated := r.writeGroupRepository(ctx, g.ID, plan.Repository, nil, &resp.Diagnostics); updated != nil {
+			g = updated
+		} else {
+			// The group exists without its repository: keep it in state so
+			// it is not orphaned (Terraform marks it tainted).
+			plan.Repository = nil
+		}
 	}
 	plan.fromAPI(g)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -142,6 +162,19 @@ func (r *projectGroupResource) Update(ctx context.Context, req resource.UpdateRe
 		addAPIError(&resp.Diagnostics, "Unable to update project group "+formatID(id), err, projectGroupPermissions)
 		return
 	}
+	prior := state.Repository
+	if plan.Repository != nil && prior == nil {
+		// Configured for the first time (for example after an import):
+		// compare with what Temps has, so a matching repository is not
+		// rewritten onto every follower.
+		prior = groupRepositoryFromAPI(g.Repository)
+	}
+	if updated := r.writeGroupRepository(ctx, id, plan.Repository, prior, &resp.Diagnostics); updated != nil {
+		g = updated
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	plan.fromAPI(g)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -177,9 +210,42 @@ type projectGroupMembershipResource struct{ resourceBase }
 func newProjectGroupMembershipResource() resource.Resource { return &projectGroupMembershipResource{} }
 
 type projectGroupMembershipModel struct {
-	ID        types.String `tfsdk:"id"`
-	GroupID   types.Int64  `tfsdk:"group_id"`
-	ProjectID types.Int64  `tfsdk:"project_id"`
+	ID                types.String `tfsdk:"id"`
+	GroupID           types.Int64  `tfsdk:"group_id"`
+	ProjectID         types.Int64  `tfsdk:"project_id"`
+	InheritRepository types.Bool   `tfsdk:"inherit_repository"`
+}
+
+// fromGroup copies the membership from the group's member entry; a server
+// without group repositories leaves inherit_repository as it is (null when
+// unknown).
+func (m *projectGroupMembershipModel) fromGroup(member *client.ProjectGroupMember) {
+	m.ID = types.StringValue(fmt.Sprintf("%d/%d", m.GroupID.ValueInt64(), m.ProjectID.ValueInt64()))
+	switch {
+	case member != nil && member.InheritsRepository != nil:
+		m.InheritRepository = types.BoolValue(*member.InheritsRepository)
+	case m.InheritRepository.IsUnknown():
+		m.InheritRepository = types.BoolNull()
+	}
+}
+
+// setInheritance makes the project follow (or stop following) the group's
+// repository when the plan asks for something other than current.
+func (r *projectGroupMembershipResource) setInheritance(ctx context.Context, plan *projectGroupMembershipModel, current types.Bool, diags *diag.Diagnostics) *client.ProjectGroupMember {
+	if !known(plan.InheritRepository) || plan.InheritRepository.Equal(current) {
+		return nil
+	}
+	gid, pid := plan.GroupID.ValueInt64(), plan.ProjectID.ValueInt64()
+	g, err := r.client.SetRepositoryInheritance(ctx, gid, pid, plan.InheritRepository.ValueBool())
+	if err != nil {
+		verb := "stop project %d following"
+		if plan.InheritRepository.ValueBool() {
+			verb = "make project %d follow"
+		}
+		addAPIError(diags, fmt.Sprintf("Unable to "+verb+" the repository of project group %d", pid, gid), err, groupRepositoryPermissions)
+		return nil
+	}
+	return g.Member(pid)
 }
 
 func (r *projectGroupMembershipResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -188,8 +254,8 @@ func (r *projectGroupMembershipResource) Metadata(_ context.Context, req resourc
 
 func (r *projectGroupMembershipResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Puts a project in a project group. A project belongs to at most one group; " +
-			"creating this resource for a project that is already in a group fails instead of moving it.\n\n" +
+		MarkdownDescription: "Puts a project in a project group, optionally following the group's repository. A project " +
+			"belongs to at most one group; creating this resource for a project that is already in a group fails instead of moving it.\n\n" +
 			"Import with `<group_id>/<project_id>`.\n\nRequired API key permissions: " + permList(projectGroupMembershipPermissions) + ".",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{Computed: true, MarkdownDescription: "`<group_id>/<project_id>`.",
@@ -198,6 +264,7 @@ func (r *projectGroupMembershipResource) Schema(_ context.Context, _ resource.Sc
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
 			"project_id": schema.Int64Attribute{Required: true, MarkdownDescription: "ID of the project.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()}},
+			"inherit_repository": inheritRepositoryAttribute(),
 		},
 	}
 }
@@ -226,7 +293,33 @@ func (r *projectGroupMembershipResource) Create(ctx context.Context, req resourc
 		addAPIError(&resp.Diagnostics, fmt.Sprintf("Unable to add project %d to project group %d", pid, gid), err, projectGroupMembershipPermissions)
 		return
 	}
-	plan.ID = types.StringValue(fmt.Sprintf("%d/%d", gid, pid))
+	g, err := r.client.GetProjectGroup(ctx, gid)
+	if err != nil {
+		// The project is in the group now: keep the membership in state
+		// (Terraform marks it tainted) so it is not orphaned. An
+		// inherit_repository that was not written is left null, so the next
+		// apply sets it.
+		addAPIError(&resp.Diagnostics, fmt.Sprintf("Project %d was added to project group %d, but reading the group back failed", pid, gid), err, projectGroupMembershipPermissions)
+		plan.InheritRepository = types.BoolUnknown()
+		plan.fromGroup(nil)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		return
+	}
+	member := g.Member(pid)
+	configured := plan.InheritRepository
+	if member != nil && member.InheritsRepository != nil {
+		// The project is in the group now; a failure below leaves it there
+		// with Temps' value, and Terraform marks the membership tainted.
+		if m := r.setInheritance(ctx, &plan, types.BoolValue(*member.InheritsRepository), &resp.Diagnostics); m != nil {
+			member = m
+		}
+	} else if known(configured) {
+		resp.Diagnostics.AddError("Unable to set inherit_repository",
+			fmt.Sprintf("Temps did not report whether project %d follows the repository of project group %d. The server is "+
+				"probably older than group repositories; upgrade Temps or remove the argument.", pid, gid))
+	}
+	plan.InheritRepository = types.BoolUnknown()
+	plan.fromGroup(member)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -246,17 +339,28 @@ func (r *projectGroupMembershipResource) Read(ctx context.Context, req resource.
 		addAPIError(&resp.Diagnostics, fmt.Sprintf("Unable to read project group %d", gid), err, projectGroupMembershipPermissions)
 		return
 	}
-	state.ID = types.StringValue(fmt.Sprintf("%d/%d", gid, pid))
+	state.fromGroup(g.Member(pid))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Update is never called: every attribute requires replacement.
+// Update only changes inherit_repository; the other attributes replace.
 func (r *projectGroupMembershipResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan projectGroupMembershipModel
+	var plan, state projectGroupMembershipModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	member := r.setInheritance(ctx, &plan, state.InheritRepository, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if member == nil {
+		plan.InheritRepository = state.InheritRepository
+	} else {
+		plan.fromGroup(member)
+	}
+	plan.ID = state.ID
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
