@@ -46,15 +46,15 @@ resource "temps_otel_alert_rule" "checkout_latency" {
 
 ### Optional
 
-- `dynamic_alerts` (Boolean) With `group_by`, fire one alarm per breaching series instead of one for the aggregate.
+- `dynamic_alerts` (Boolean) With `group_by`, fire one alarm per breaching series instead of one for the aggregate. Unset is `false`.
 - `enabled` (Boolean) Evaluate the rule.
 - `for_duration_secs` (Number) Seconds the breach must last before the alarm fires; `0` fires at once.
-- `group_by` (List of String) Label keys to break the metric down by, at most 2.
-- `grouped_notification_threshold` (Number) When more series than this start firing at once, only the first notification gets charts, 1-1000.
-- `label_filters` (String) Label equality filters, all of which must match: `jsonencode([["region", "eu"]])`. At most 10. A JSON document; use `jsonencode(...)`.
-- `max_series` (Number) Most series evaluated with `dynamic_alerts`, 1-100.
-- `metric_name` (String) OpenTelemetry metric watched. Required unless `source` is a saved log search, whose series Temps names.
-- `source` (String) What the rule watches: `jsonencode({ kind = "metric" })` (the default) or `jsonencode({ kind = "logs", saved_search_id = 3 })`. A JSON document; use `jsonencode(...)`.
+- `group_by` (List of String) Label keys to break the metric down by, at most 2. Unset watches the aggregate.
+- `grouped_notification_threshold` (Number) When more series than this start firing at once, only the first notification gets charts, 1-1000. Unset is 5.
+- `label_filters` (String) Label equality filters, all of which must match: `jsonencode([["region", "eu"]])`. At most 10. Unset matches every series. A JSON document; use `jsonencode(...)`.
+- `max_series` (Number) Most series evaluated with `dynamic_alerts`, 1-100. Unset is 20.
+- `metric_name` (String) OpenTelemetry metric watched. Required unless `source` is a saved log search: leave it unset there, Temps names that series `logs.matched_lines`.
+- `source` (String) What the rule watches: `jsonencode({ kind = "metric" })` (used when unset) or `jsonencode({ kind = "logs", saved_search_id = 3 })`. A JSON document; use `jsonencode(...)`.
 
 ### Read-Only
 

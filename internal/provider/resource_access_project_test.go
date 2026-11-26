@@ -79,7 +79,37 @@ resource "temps_access_service" "api" {
 			// Leaving the project out makes it a service of the instance.
 			Config:           cfg("", "API v2"),
 			ConfigPlanChecks: expectAction(addr, plancheck.ResourceActionDestroyBeforeCreate),
-			Check:            resource.TestMatchResourceAttr(addr, "id", regexp.MustCompile(`^svc_\d+$`)),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestMatchResourceAttr(addr, "id", regexp.MustCompile(`^svc_\d+$`)),
+				func(s *terraform.State) error {
+					id = idOf(s, addr)
+					return nil
+				},
+			),
+		},
+		{
+			// Temps reports a project for an object state holds without one
+			// (state written before project_id existed, or a project kept as
+			// provenance): a refresh must not adopt it, which would plan a
+			// replacement.
+			PreConfig:        func() { f.with(func() { f.services[id]["project_id"] = 8 }) },
+			Config:           cfg("", "API v2"),
+			ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+			Check:            resource.TestCheckNoResourceAttr(addr, "project_id"),
+		},
+		{
+			// An import still reads the project back.
+			ResourceName: addr, ImportState: true,
+			ImportStateCheck: func(s []*terraform.InstanceState) error {
+				if len(s) != 1 || s[0].Attributes["project_id"] != "8" {
+					return fmt.Errorf("import produced %v", s)
+				}
+				return nil
+			},
+		},
+		{
+			PreConfig: func() { f.with(func() { delete(f.services[id], "project_id") }) },
+			Config:    cfg("", "API v2"),
 		},
 		{
 			PreConfig:        func() { f.with(func() { clear(f.services) }) },

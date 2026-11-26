@@ -156,7 +156,7 @@ func TestUnitServiceAlertRule(t *testing.T) {
 resource "temps_service_alert_rule" "conn" {
   service_id  = 21
   name        = "Connections"
-  metric_name = "postgres.connections"
+  metric_name = "pg.connections"
   threshold   = %s
   comparator  = ">="
   severity    = "critical"
@@ -200,7 +200,7 @@ resource "temps_service_alert_rule" "conn" {
 resource "temps_service_alert_rule" "conn" {
   service_id  = 99
   name        = "Connections"
-  metric_name = "postgres.connections"
+  metric_name = "pg.connections"
   threshold   = 1
   comparator  = ">"
   severity    = "critical"
@@ -239,8 +239,10 @@ resource "temps_otel_alert_rule" "latency" {
 			ConfigPlanChecks: emptyPlanAfterApply(),
 			Check: resource.ComposeAggregateTestCheckFunc(
 				resource.TestCheckResourceAttr(addr, "detection_kind", "static"),
-				resource.TestCheckResourceAttr(addr, "max_series", "20"),
-				resource.TestCheckResourceAttr(addr, "dynamic_alerts", "false"),
+				// Temps' defaults for what was left out keep it unset.
+				resource.TestCheckNoResourceAttr(addr, "max_series"),
+				resource.TestCheckNoResourceAttr(addr, "dynamic_alerts"),
+				resource.TestCheckNoResourceAttr(addr, "source"),
 				func(s *terraform.State) error {
 					id = mustID(idOf(s, addr)[2:])
 					if b := f.body("POST /api/otel/alerts"); fmt.Sprint(b["project_id"]) != "8" {
@@ -297,7 +299,7 @@ resource "temps_otel_alert_rule" "errors" {
   severity         = "warning"
 }`,
 			ConfigPlanChecks: emptyPlanAfterApply(),
-			Check:            resource.TestCheckResourceAttr("temps_otel_alert_rule.errors", "metric_name", "logs.saved_search.3"),
+			Check:            resource.TestCheckResourceAttr("temps_otel_alert_rule.errors", "metric_name", logAlertMetricName),
 		},
 		{Config: cfg(9, "page"), ExpectError: regexp.MustCompile(`severity`)},
 		{Config: f.config(`
@@ -331,7 +333,7 @@ resource "temps_otel_dashboard" "d" {
     sections = [{
       id    = "http"
       title = "HTTP"
-      tiles = [{ id = "latency", title = "Latency", metric_name = "http.server.duration", aggregation = %q, chart = "line" }]
+      tiles = [{ id = "latency", title = "Latency", metric_name = "http.server.duration", aggregation = %q }]
     }]
   })
 }`, name, agg)
@@ -372,17 +374,151 @@ resource "temps_otel_dashboard" "d" {
 			ConfigPlanChecks: plannedCreate(addr),
 		},
 		{Config: cfg("Service health", "p99")},
+		{
+			// Temps drops tile keys it does not know, so the layout read
+			// back would differ: refuse them before anything is sent.
+			Config: f.config(`
+resource "temps_otel_dashboard" "chart" {
+  project_id = 8
+  name       = "x"
+  layout = jsonencode({
+    sections = [{ id = "s", title = "S", tiles = [{ id = "t", metric_name = "m", aggregation = "avg", chart = "line" }] }]
+  })
+}`),
+			ExpectError: regexp.MustCompile(`(?s)Tile 1 of section 1 has "chart"`),
+		},
 		{Config: f.config(`
 resource "temps_otel_dashboard" "bad" {
   project_id = 8
   name       = "x"
-  layout     = jsonencode({ rows = [] })
+  layout     = jsonencode({})
 }`), ExpectError: regexp.MustCompile(`(?s)422.*sections`)},
 	}, func(*terraform.State) error {
 		var n int
 		f.with(func() { n = len(f.dashes) })
 		if n != 0 {
 			return fmt.Errorf("%d dashboards left after destroy", n)
+		}
+		return nil
+	})
+}
+
+// Removing a setting from an OpenTelemetry alert rule restores Temps'
+// default (its PATCH leaves absent keys unchanged), and a rule switches
+// between a metric and a log search in place.
+func TestUnitOtelAlertRuleSettingsAndSource(t *testing.T) {
+	f := newMoreFake(t)
+	rule := func(body string) string {
+		return f.config(`
+resource "temps_otel_alert_rule" "r" {
+  project_id       = 8
+  name             = "Checkout"
+  detection_config = jsonencode({ kind = "static", comparator = "gt", threshold = 500 })
+  window_secs      = 300
+  severity         = "warning"
+  %s
+}`, body)
+	}
+	const metric = `
+  metric_name = "http.server.duration"
+  aggregation = "p95"`
+	tuned := rule(metric + `
+  label_filters                  = jsonencode([["route", "/checkout"]])
+  group_by                       = ["region"]
+  dynamic_alerts                 = true
+  max_series                     = 50
+  grouped_notification_threshold = 10`)
+	logs := rule(`
+  aggregation = "count"
+  source      = jsonencode({ kind = "logs", saved_search_id = 3 })`)
+	const addr = "temps_otel_alert_rule.r"
+	var id int64
+	patch := func() map[string]any { return f.body(fmt.Sprintf("PATCH /api/otel/alerts/%d?project_id=8", id)) }
+	runEngine(t, []resource.TestStep{
+		{
+			Config:           tuned,
+			ConfigPlanChecks: emptyPlanAfterApply(),
+			Check: func(s *terraform.State) error {
+				id = mustID(idOf(s, addr)[2:])
+				return nil
+			},
+		},
+		{
+			// Dropping the settings sends Temps' defaults; unset in state.
+			Config:           rule(metric),
+			ConfigPlanChecks: expectAction(addr, plancheck.ResourceActionUpdate),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckNoResourceAttr(addr, "label_filters"),
+				resource.TestCheckNoResourceAttr(addr, "group_by.#"),
+				resource.TestCheckNoResourceAttr(addr, "dynamic_alerts"),
+				resource.TestCheckNoResourceAttr(addr, "max_series"),
+				resource.TestCheckNoResourceAttr(addr, "grouped_notification_threshold"),
+				func(*terraform.State) error {
+					b := patch()
+					want := map[string]any{"label_filters": []any{}, "group_by": []any{}, "dynamic_alerts": false,
+						"max_series": float64(defaultMaxSeries), "grouped_notification_threshold": float64(defaultGroupedThreshold)}
+					for k, w := range want {
+						if !sameJSON(b[k], w) {
+							return fmt.Errorf("update sent %s = %v, want %v (body %v)", k, b[k], w, b)
+						}
+					}
+					var r map[string]any
+					f.with(func() { r = copyDoc(f.otelRules[id]) })
+					if l, _ := r["label_filters"].([]any); len(l) != 0 {
+						return fmt.Errorf("the rule still filters on %v", r["label_filters"])
+					}
+					return nil
+				},
+			),
+		},
+		{
+			// A log search: metric_name is left to Temps.
+			Config:           logs,
+			ConfigPlanChecks: expectAction(addr, plancheck.ResourceActionUpdate),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckResourceAttr(addr, "metric_name", logAlertMetricName),
+				func(*terraform.State) error {
+					if b := patch(); b["metric_name"] != nil {
+						return fmt.Errorf("update sent the old metric_name: %v", b)
+					}
+					return nil
+				},
+			),
+		},
+		{
+			// Back to a metric: removing source sends the metric source.
+			Config:           rule(metric),
+			ConfigPlanChecks: expectAction(addr, plancheck.ResourceActionUpdate),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckResourceAttr(addr, "metric_name", "http.server.duration"),
+				resource.TestCheckNoResourceAttr(addr, "source"),
+				func(*terraform.State) error {
+					if b := patch(); !sameJSON(b["source"], map[string]any{"kind": "metric"}) {
+						return fmt.Errorf("update sent source %v", b["source"])
+					}
+					return nil
+				},
+			),
+		},
+		{
+			Config: rule(`
+  metric_name = "http.server.duration"
+  aggregation = "count"
+  source      = jsonencode({ kind = "logs", saved_search_id = 3 })`),
+			ExpectError: regexp.MustCompile(`metric_name is not used by a log alert`),
+		},
+		{
+			Config: rule(`
+  aggregation = "sum"
+  source      = jsonencode({ kind = "logs", saved_search_id = 3 })`),
+			ExpectError: regexp.MustCompile(`(?s)A log alert counts lines.*"sum"`),
+		},
+		{Config: rule(metric)},
+	}, func(*terraform.State) error {
+		var n int
+		f.with(func() { n = len(f.otelRules) })
+		if n != 0 {
+			return fmt.Errorf("%d OpenTelemetry alert rules left after destroy", n)
 		}
 		return nil
 	})

@@ -610,7 +610,7 @@ func TestGenericClearWithReadsEmptyAsUnset(t *testing.T) {
 	}}}
 	v := gvals{"description": types.StringValue("old"), "note": types.StringValue("old")}
 	var diags diag.Diagnostics
-	r.apply(v, map[string]any{"description": "", "note": ""}, &diags)
+	r.apply(v, map[string]any{"description": "", "note": ""}, false, &diags)
 	if diags.HasError() {
 		t.Fatal(diags)
 	}
@@ -637,10 +637,4 @@ func TestErrorSpecsNormalizeServerKeys(t *testing.T) {
 	if got := search["filters"]; !sameJSON(got, map[string]any{"status": "unresolved", "sort_order": "desc"}) {
 		t.Fatalf("filters = %#v", got)
 	}
-}
-
-func sameJSON(a, b any) bool {
-	x, _ := json.Marshal(a)
-	y, _ := json.Marshal(b)
-	return string(x) == string(y)
 }

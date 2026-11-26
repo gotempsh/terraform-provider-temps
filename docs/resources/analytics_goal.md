@@ -48,7 +48,7 @@ resource "temps_analytics_goal" "thank_you" {
 
 ### Optional
 
-- `event_filter` (String) Conditions the event must meet, as in funnel steps: `jsonencode([{ type = "custom_data", value = { path = "plan", value = "pro" } }])`. A JSON document; use `jsonencode(...)`.
+- `event_filter` (String) Conditions a conversion must meet, as in funnel steps: `jsonencode([{ type = "custom_data", value = { path = "plan", value = "pro" } }])`. Temps applies them to page goals too; unset has no conditions. A JSON document; use `jsonencode(...)`.
 - `event_name` (String) Custom event that converts (`event`).
 - `page_path` (String) Page path that converts (`page`), for example `/thank-you`.
 - `revenue_currency` (String) ISO 4217 currency of the revenue, in capitals (`EUR`).

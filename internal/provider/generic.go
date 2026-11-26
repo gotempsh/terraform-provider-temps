@@ -81,7 +81,9 @@ type gfield struct {
 	Clearable bool
 	// ClearWith is sent instead of null when a Clearable value is removed,
 	// for PATCH endpoints where null means "unchanged" and an empty string
-	// clears. With "", an empty string read back is also treated as unset.
+	// clears. With "", an empty string read back is also treated as unset;
+	// any other ClearWith read back while the attribute is unset (the
+	// server's default) keeps it unset.
 	ClearWith any
 	Sensitive bool
 	ForceNew  bool
@@ -92,8 +94,9 @@ type gfield struct {
 	Initial bool
 	// Path values only build request paths and are never sent in a body.
 	Path bool
-	// Volatile outputs change on their own (status, timestamps): they are not
-	// carried over from state into plans.
+	// Volatile values change on their own (status, timestamps) or with other
+	// attributes (a name the server derives): they are not carried over from
+	// state into plans.
 	Volatile bool
 	// Subset (kJSON): the server fills in defaults; keep the configured
 	// document while every configured key still has the configured value.
@@ -217,6 +220,9 @@ type gspec struct {
 	// DeleteHook replaces Delete, for objects some of which Temps refuses to
 	// delete. A not-found error is ignored.
 	DeleteHook func(ctx context.Context, c *client.Client, v gvals, id string) error
+	// Validate checks the configuration as a whole before a plan. Values may
+	// be unknown.
+	Validate func(v gvals, diags *diag.Diagnostics)
 }
 
 func (s *gspec) idKey() string {
@@ -264,8 +270,9 @@ type genericResource struct {
 }
 
 var (
-	_ resource.Resource                = &genericResource{}
-	_ resource.ResourceWithImportState = &genericResource{}
+	_ resource.Resource                   = &genericResource{}
+	_ resource.ResourceWithImportState    = &genericResource{}
+	_ resource.ResourceWithValidateConfig = &genericResource{}
 )
 
 func genericFactory(s *gspec) func() resource.Resource {
@@ -1013,8 +1020,10 @@ func (r *genericResource) body(ctx context.Context, v gvals, create bool, diags 
 }
 
 // apply copies a response object into v. Values the server does not return
-// keep what v holds (configuration on write, state on read).
-func (r *genericResource) apply(v gvals, obj map[string]any, diags *diag.Diagnostics) {
+// keep what v holds (configuration on write, state on read). importing fills
+// unset path values from the response, which only an import may do: in any
+// other read an unset path value is the configuration's.
+func (r *genericResource) apply(v gvals, obj map[string]any, importing bool, diags *diag.Diagnostics) {
 	if r.s.Normalize != nil && obj != nil {
 		r.s.Normalize(obj)
 	}
@@ -1024,8 +1033,8 @@ func (r *genericResource) apply(v gvals, obj map[string]any, diags *diag.Diagnos
 			continue
 		}
 		// Path values come from configuration; read them only to fill an
-		// import.
-		if f.Path && v[f.Name] != nil && !v[f.Name].IsNull() && !v[f.Name].IsUnknown() {
+		// import or a value the plan left to the server.
+		if cur := v[f.Name]; f.Path && cur != nil && !cur.IsUnknown() && (!cur.IsNull() || !importing) {
 			continue
 		}
 		raw, ok := getPath(obj, f.readKey())
@@ -1034,6 +1043,11 @@ func (r *genericResource) apply(v gvals, obj map[string]any, diags *diag.Diagnos
 		}
 		// A field cleared by sending "" may come back as "": it is unset.
 		if s, isStr := raw.(string); isStr && s == "" && f.ClearWith == "" {
+			raw = nil
+		}
+		// The value a removal sends, read back while unset, is the server's
+		// default: the attribute stays unset.
+		if f.Clearable && f.ClearWith != nil && f.ClearWith != "" && isNullValue(v[f.Name]) && sameJSON(raw, f.ClearWith) {
 			raw = nil
 		}
 		nv, err := fromJSON(f, raw, v[f.Name])
@@ -1053,6 +1067,9 @@ func (r *genericResource) apply(v gvals, obj map[string]any, diags *diag.Diagnos
 		}
 	}
 }
+
+// isNullValue reports whether an attribute value is absent or null.
+func isNullValue(v attr.Value) bool { return v == nil || v.IsNull() }
 
 func (r *genericResource) what(v gvals) string {
 	id := scalarString(v["id"])
@@ -1229,9 +1246,13 @@ func (r *genericResource) Create(ctx context.Context, req resource.CreateRequest
 			obj = overlay(obj, fresh)
 		}
 	}
-	r.apply(v, obj, &resp.Diagnostics)
+	r.apply(v, obj, false, &resp.Diagnostics)
 	r.save(ctx, &resp.State, v, &resp.Diagnostics)
 }
+
+// importingKey marks, in private state, a resource just imported: its first
+// read fills what the import ID did not carry.
+const importingKey = "importing"
 
 func (r *genericResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	v := r.load(ctx, req.State.GetAttribute, &resp.Diagnostics)
@@ -1247,8 +1268,24 @@ func (r *genericResource) Read(ctx context.Context, req resource.ReadRequest, re
 		resp.State.RemoveResource(ctx)
 		return
 	}
-	r.apply(v, obj, &resp.Diagnostics)
+	marker, d := req.Private.GetKey(ctx, importingKey)
+	resp.Diagnostics.Append(d...)
+	r.apply(v, obj, len(marker) > 0, &resp.Diagnostics)
 	r.save(ctx, &resp.State, v, &resp.Diagnostics)
+	if len(marker) > 0 {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, importingKey, nil)...)
+	}
+}
+
+func (r *genericResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	if r.s.Validate == nil {
+		return
+	}
+	v := r.load(ctx, req.Config.GetAttribute, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	r.s.Validate(v, &resp.Diagnostics)
 }
 
 func (r *genericResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -1287,7 +1324,7 @@ func (r *genericResource) Update(ctx context.Context, req resource.UpdateRequest
 		}
 		obj = fresh
 	}
-	r.apply(v, obj, &resp.Diagnostics)
+	r.apply(v, obj, false, &resp.Diagnostics)
 	r.save(ctx, &resp.State, v, &resp.Diagnostics)
 }
 
@@ -1317,6 +1354,7 @@ func (r *genericResource) Delete(ctx context.Context, req resource.DeleteRequest
 }
 
 func (r *genericResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, importingKey, []byte("true"))...)
 	s := r.s
 	want := len(s.Parents)
 	if !s.Singleton {

@@ -54,8 +54,27 @@ resource "temps_analytics_goal" "g" {
 						return fmt.Errorf("update must send %s: null, sent %v", k, b)
 					}
 				}
+				// Temps applies event_filter to page goals too: a filter
+				// left in place would quietly drop conversions.
+				if v, ok := b["event_filter"].([]any); !ok || len(v) != 0 {
+					return fmt.Errorf("update must send event_filter: [], sent %v", b)
+				}
 				return nil
 			},
+		},
+		{
+			Config: page,
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckNoResourceAttr(addr, "event_filter"),
+				func(*terraform.State) error {
+					var filter any
+					f.with(func() { filter = f.goals[id]["event_filter"] })
+					if l, ok := filter.([]any); !ok || len(l) != 0 {
+						return fmt.Errorf("the goal still filters on %v", filter)
+					}
+					return nil
+				},
+			),
 		},
 		{ResourceName: addr, ImportState: true, ImportStateVerify: true},
 		{

@@ -31,7 +31,6 @@ resource "temps_otel_dashboard" "service" {
         title       = "p95 latency"
         metric_name = "http.server.duration"
         aggregation = "p95"
-        chart       = "line"
       }]
     }]
   })
@@ -43,7 +42,7 @@ resource "temps_otel_dashboard" "service" {
 
 ### Required
 
-- `layout` (String) Sections and their tiles: `jsonencode({ sections = [{ id = "http", title = "HTTP", tiles = [...] }] })`. Values Temps fills in for a tile left out of the configuration are not compared. A JSON document; use `jsonencode(...)`.
+- `layout` (String) Sections and their tiles: `jsonencode({ sections = [{ id = "http", title = "HTTP", tiles = [...] }] })`. A tile has `id`, `metric_name`, `aggregation` and optionally `title`, `label_filters`, `group_by` and `source`. Values Temps fills in for a tile left out of the configuration are not compared. A JSON document; use `jsonencode(...)`.
 - `name` (String) Name of the dashboard.
 - `project_id` (Number) ID of the project.
 

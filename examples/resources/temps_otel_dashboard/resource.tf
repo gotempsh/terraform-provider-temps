@@ -10,7 +10,6 @@ resource "temps_otel_dashboard" "service" {
         title       = "p95 latency"
         metric_name = "http.server.duration"
         aggregation = "p95"
-        chart       = "line"
       }]
     }]
   })

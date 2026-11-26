@@ -157,8 +157,8 @@ func (f *moreFake) otelRoutes(h moreHandler) {
 		"grouped_notification_threshold"}
 	normalize := func(rule map[string]any) {
 		if src, _ := rule["source"].(map[string]any); src["kind"] == "logs" {
-			rule["aggregation"] = "count"
-			rule["metric_name"] = fmt.Sprintf("logs.saved_search.%v", src["saved_search_id"])
+			rule["aggregation"] = logAlertAggregation
+			rule["metric_name"] = logAlertMetricName
 		}
 		dc, _ := rule["detection_config"].(map[string]any)
 		rule["detection_kind"] = dc["kind"]
@@ -210,15 +210,26 @@ func (f *moreFake) otelRoutes(h moreHandler) {
 		}
 	})
 
-	// Dashboards: tiles come back with every default filled in.
+	// Dashboards: Temps decodes the layout into typed sections and tiles, so
+	// tiles come back with every default filled in and unknown keys dropped.
+	keep := func(obj map[string]any, keys []string) {
+		for k := range obj {
+			if !slices.Contains(keys, k) {
+				delete(obj, k)
+			}
+		}
+	}
 	fillLayout := func(layout any) any {
 		l := copyDoc(map[string]any{"l": layout})["l"]
+		keep(asObject(l), dashboardLayoutKeys)
 		sections, _ := asObject(l)["sections"].([]any)
 		for _, s := range sections {
+			keep(asObject(s), dashboardSectionKeys)
 			tiles, _ := asObject(s)["tiles"].([]any)
 			for _, t := range tiles {
 				tile := asObject(t)
-				for k, d := range map[string]any{"label_filters": []any{}, "group_by": []any{}, "source": map[string]any{"kind": "metric"}} {
+				keep(tile, dashboardTileKeys)
+				for k, d := range map[string]any{"title": nil, "label_filters": []any{}, "group_by": []any{}, "source": map[string]any{"kind": "metric"}} {
 					if _, ok := tile[k]; !ok {
 						tile[k] = d
 					}

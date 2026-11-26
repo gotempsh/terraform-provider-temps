@@ -22,7 +22,7 @@ Required API key permissions: `external_services:read`, `external_services:write
 resource "temps_service_alert_rule" "connections" {
   service_id        = temps_service.db.id
   name              = "Connections near the limit"
-  metric_name       = "postgres.connections"
+  metric_name       = "pg.connections"
   threshold         = 180
   comparator        = ">="
   severity          = "critical"

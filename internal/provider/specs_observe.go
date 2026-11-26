@@ -5,9 +5,15 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
+
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/gotempsh/terraform-provider-temps/internal/client"
 )
@@ -93,6 +99,39 @@ func projectQuery(v gvals) url.Values {
 
 var otelPerms = []string{"otel:read", "otel:write"}
 
+// What Temps uses for an alert rule's series settings left out of a request,
+// and the series it gives a log alert (temps-otel's metric alert service).
+const (
+	defaultMaxSeries        = 20
+	defaultGroupedThreshold = 5
+	logAlertMetricName      = "logs.matched_lines"
+	logAlertAggregation     = "count"
+)
+
+// validateOtelAlertRule refuses what Temps would silently rewrite: a log
+// alert's series is named by Temps and counts lines, so a configured
+// metric_name or another aggregation would come back different from the plan.
+func validateOtelAlertRule(v gvals, diags *diag.Diagnostics) {
+	src, ok := v["source"].(types.String)
+	if !ok || !known(src) {
+		return
+	}
+	var doc map[string]any
+	if json.Unmarshal([]byte(src.ValueString()), &doc) != nil || doc["kind"] != "logs" {
+		return
+	}
+	if m, ok := v["metric_name"].(types.String); ok && known(m) {
+		diags.AddAttributeError(path.Root("metric_name"), "metric_name is not used by a log alert",
+			"A rule whose source is a saved log search watches the matching line count, which Temps names `"+
+				logAlertMetricName+"`. Remove metric_name.")
+	}
+	if a, ok := v["aggregation"].(types.String); ok && known(a) && a.ValueString() != logAlertAggregation {
+		diags.AddAttributeError(path.Root("aggregation"), "A log alert counts lines",
+			fmt.Sprintf("A rule whose source is a saved log search must use aggregation = %q, not %q.",
+				logAlertAggregation, a.ValueString()))
+	}
+}
+
 var otelAlertRuleSpec = &gspec{
 	Name: "otel_alert_rule",
 	Desc: "An alert on an OpenTelemetry metric a project sends to Temps, or on the number of log lines " +
@@ -102,13 +141,14 @@ var otelAlertRuleSpec = &gspec{
 	Fields: []gfield{
 		{Name: "project_id", Kind: kInt, Required: true, CreateOnly: true, Desc: "ID of the project."},
 		{Name: "name", Kind: kString, Required: true, Desc: "Name of the rule."},
-		{Name: "metric_name", Kind: kString, Optional: true,
-			Desc: "OpenTelemetry metric watched. Required unless `source` is a saved log search, whose series Temps names."},
+		{Name: "metric_name", Kind: kString, Optional: true, Volatile: true,
+			Desc: "OpenTelemetry metric watched. Required unless `source` is a saved log search: leave it unset " +
+				"there, Temps names that series `" + logAlertMetricName + "`."},
 		{Name: "aggregation", Kind: kString, Required: true,
 			OneOf: []string{"avg", "sum", "min", "max", "count", "rate", "p50", "p90", "p95", "p99"},
 			Desc:  "How the metric's points in a window are combined. A log alert counts lines: use `count`."},
-		{Name: "source", Kind: kJSON, Optional: true, Subset: true,
-			Desc: "What the rule watches: `jsonencode({ kind = \"metric\" })` (the default) or " +
+		{Name: "source", Kind: kJSON, Clearable: true, ClearWith: map[string]any{"kind": "metric"}, Subset: true,
+			Desc: "What the rule watches: `jsonencode({ kind = \"metric\" })` (used when unset) or " +
 				"`jsonencode({ kind = \"logs\", saved_search_id = 3 })`."},
 		{Name: "detection_config", Kind: kJSON, Required: true, Subset: true,
 			Desc: "The detector, for example `jsonencode({ kind = \"static\", comparator = \"gt\", threshold = 500 })`. " +
@@ -118,21 +158,66 @@ var otelAlertRuleSpec = &gspec{
 			Desc: "Seconds the breach must last before the alarm fires; `0` fires at once."},
 		{Name: "severity", Kind: kString, Required: true, OneOf: []string{"info", "warning", "critical"}, Desc: "Severity of the alarm."},
 		{Name: "enabled", Kind: kBool, Optional: true, Default: true, Desc: "Evaluate the rule."},
-		{Name: "label_filters", Kind: kJSON, Optional: true,
-			Desc: "Label equality filters, all of which must match: `jsonencode([[\"region\", \"eu\"]])`. At most 10."},
-		{Name: "group_by", Kind: kStringList, Optional: true, Desc: "Label keys to break the metric down by, at most 2."},
-		{Name: "dynamic_alerts", Kind: kBool, Optional: true,
-			Desc: "With `group_by`, fire one alarm per breaching series instead of one for the aggregate."},
-		{Name: "max_series", Kind: kInt, Optional: true, Desc: "Most series evaluated with `dynamic_alerts`, 1-100."},
-		{Name: "grouped_notification_threshold", Kind: kInt, Optional: true,
-			Desc: "When more series than this start firing at once, only the first notification gets charts, 1-1000."},
+		{Name: "label_filters", Kind: kJSON, Clearable: true, ClearWith: []any{},
+			Desc: "Label equality filters, all of which must match: `jsonencode([[\"region\", \"eu\"]])`. At most 10. " +
+				"Unset matches every series."},
+		{Name: "group_by", Kind: kStringList, Clearable: true, ClearWith: []any{},
+			Desc: "Label keys to break the metric down by, at most 2. Unset watches the aggregate."},
+		{Name: "dynamic_alerts", Kind: kBool, Clearable: true, ClearWith: false,
+			Desc: "With `group_by`, fire one alarm per breaching series instead of one for the aggregate. Unset is `false`."},
+		{Name: "max_series", Kind: kInt, Clearable: true, ClearWith: int64(defaultMaxSeries),
+			Desc: fmt.Sprintf("Most series evaluated with `dynamic_alerts`, 1-100. Unset is %d.", defaultMaxSeries)},
+		{Name: "grouped_notification_threshold", Kind: kInt, Clearable: true, ClearWith: int64(defaultGroupedThreshold),
+			Desc: fmt.Sprintf("When more series than this start firing at once, only the first notification gets charts, "+
+				"1-1000. Unset is %d.", defaultGroupedThreshold)},
 		{Name: "detection_kind", Kind: kString, Computed: true, Desc: "Kind of the detector."},
 		{Name: "last_state", Kind: kString, Computed: true, Volatile: true, Desc: "`ok`, `firing` or `unknown`."},
 	},
-	Create: gop{Method: http.MethodPost, Path: "/otel/alerts"},
-	Read:   gop{Path: "/otel/alerts/{id}", Query: projectQuery},
-	Update: gop{Method: http.MethodPatch, Path: "/otel/alerts/{id}", Query: projectQuery},
-	Delete: gop{Method: http.MethodDelete, Path: "/otel/alerts/{id}", Query: projectQuery},
+	Validate: validateOtelAlertRule,
+	Create:   gop{Method: http.MethodPost, Path: "/otel/alerts"},
+	Read:     gop{Path: "/otel/alerts/{id}", Query: projectQuery},
+	Update:   gop{Method: http.MethodPatch, Path: "/otel/alerts/{id}", Query: projectQuery},
+	Delete:   gop{Method: http.MethodDelete, Path: "/otel/alerts/{id}", Query: projectQuery},
+}
+
+// The keys Temps keeps in a dashboard layout (temps-otel's DashboardLayout,
+// DashboardSection and DashboardTile). It drops any other key without an
+// error, so the layout read back would differ from the configured one.
+var (
+	dashboardLayoutKeys  = []string{"sections"}
+	dashboardSectionKeys = []string{"id", "title", "tiles"}
+	dashboardTileKeys    = []string{"id", "metric_name", "aggregation", "title", "label_filters", "group_by", "source"}
+)
+
+// validateOtelDashboard refuses layout keys Temps would drop.
+func validateOtelDashboard(v gvals, diags *diag.Diagnostics) {
+	l, ok := v["layout"].(types.String)
+	if !ok || !known(l) {
+		return
+	}
+	var layout map[string]any
+	if json.Unmarshal([]byte(l.ValueString()), &layout) != nil {
+		return // the attribute's own validator reports it
+	}
+	unknownKeys := func(where string, obj map[string]any, allowed []string) {
+		for _, k := range sortedKeys(obj) {
+			if !slices.Contains(allowed, k) {
+				diags.AddAttributeError(path.Root("layout"), "Unknown dashboard layout key",
+					fmt.Sprintf("%s has %q, which Temps does not store; it accepts %s.", where, k, "`"+joinTicks(allowed)+"`"))
+			}
+		}
+	}
+	unknownKeys("The layout", layout, dashboardLayoutKeys)
+	sections, _ := layout["sections"].([]any)
+	for i, s := range sections {
+		section, _ := s.(map[string]any)
+		unknownKeys(fmt.Sprintf("Section %d", i+1), section, dashboardSectionKeys)
+		tiles, _ := section["tiles"].([]any)
+		for j, t := range tiles {
+			tile, _ := t.(map[string]any)
+			unknownKeys(fmt.Sprintf("Tile %d of section %d", j+1, i+1), tile, dashboardTileKeys)
+		}
+	}
 }
 
 var otelDashboardSpec = &gspec{
@@ -145,10 +230,12 @@ var otelDashboardSpec = &gspec{
 		{Name: "name", Kind: kString, Required: true, Desc: "Name of the dashboard."},
 		{Name: "layout", Kind: kJSON, Required: true, Subset: true,
 			Desc: "Sections and their tiles: `jsonencode({ sections = [{ id = \"http\", title = \"HTTP\", tiles = [...] }] })`. " +
-				"Values Temps fills in for a tile left out of the configuration are not compared."},
+				"A tile has `id`, `metric_name`, `aggregation` and optionally `title`, `label_filters`, `group_by` and " +
+				"`source`. Values Temps fills in for a tile left out of the configuration are not compared."},
 	},
-	Create: gop{Method: http.MethodPost, Path: "/otel/dashboards"},
-	Read:   gop{Path: "/otel/dashboards/{id}", Query: projectQuery},
-	Update: gop{Method: http.MethodPatch, Path: "/otel/dashboards/{id}", Query: projectQuery},
-	Delete: gop{Method: http.MethodDelete, Path: "/otel/dashboards/{id}", Query: projectQuery},
+	Validate: validateOtelDashboard,
+	Create:   gop{Method: http.MethodPost, Path: "/otel/dashboards"},
+	Read:     gop{Path: "/otel/dashboards/{id}", Query: projectQuery},
+	Update:   gop{Method: http.MethodPatch, Path: "/otel/dashboards/{id}", Query: projectQuery},
+	Delete:   gop{Method: http.MethodDelete, Path: "/otel/dashboards/{id}", Query: projectQuery},
 }
