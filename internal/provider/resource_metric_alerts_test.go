@@ -239,10 +239,9 @@ resource "temps_otel_alert_rule" "latency" {
 			ConfigPlanChecks: emptyPlanAfterApply(),
 			Check: resource.ComposeAggregateTestCheckFunc(
 				resource.TestCheckResourceAttr(addr, "detection_kind", "static"),
-				// Temps' defaults for what was left out keep it unset.
-				resource.TestCheckNoResourceAttr(addr, "max_series"),
-				resource.TestCheckNoResourceAttr(addr, "dynamic_alerts"),
-				resource.TestCheckNoResourceAttr(addr, "source"),
+				resource.TestCheckResourceAttr(addr, "max_series", "20"),
+				resource.TestCheckResourceAttr(addr, "dynamic_alerts", "false"),
+				resource.TestCheckResourceAttr(addr, "source", `{"kind":"metric"}`),
 				func(s *terraform.State) error {
 					id = mustID(idOf(s, addr)[2:])
 					if b := f.body("POST /api/otel/alerts"); fmt.Sprint(b["project_id"]) != "8" {
@@ -444,15 +443,15 @@ resource "temps_otel_alert_rule" "r" {
 			},
 		},
 		{
-			// Dropping the settings sends Temps' defaults; unset in state.
+			// Dropping the settings sends Temps' defaults.
 			Config:           rule(metric),
 			ConfigPlanChecks: expectAction(addr, plancheck.ResourceActionUpdate),
 			Check: resource.ComposeAggregateTestCheckFunc(
-				resource.TestCheckNoResourceAttr(addr, "label_filters"),
-				resource.TestCheckNoResourceAttr(addr, "group_by.#"),
-				resource.TestCheckNoResourceAttr(addr, "dynamic_alerts"),
-				resource.TestCheckNoResourceAttr(addr, "max_series"),
-				resource.TestCheckNoResourceAttr(addr, "grouped_notification_threshold"),
+				resource.TestCheckResourceAttr(addr, "label_filters", "[]"),
+				resource.TestCheckResourceAttr(addr, "group_by.#", "0"),
+				resource.TestCheckResourceAttr(addr, "dynamic_alerts", "false"),
+				resource.TestCheckResourceAttr(addr, "max_series", "20"),
+				resource.TestCheckResourceAttr(addr, "grouped_notification_threshold", "5"),
 				func(*terraform.State) error {
 					b := patch()
 					want := map[string]any{"label_filters": []any{}, "group_by": []any{}, "dynamic_alerts": false,
@@ -485,13 +484,15 @@ resource "temps_otel_alert_rule" "r" {
 				},
 			),
 		},
+		// An import converges whether the defaults are left out or spelled out.
+		{ResourceName: addr, ImportState: true, ImportStateVerify: true},
 		{
 			// Back to a metric: removing source sends the metric source.
 			Config:           rule(metric),
 			ConfigPlanChecks: expectAction(addr, plancheck.ResourceActionUpdate),
 			Check: resource.ComposeAggregateTestCheckFunc(
 				resource.TestCheckResourceAttr(addr, "metric_name", "http.server.duration"),
-				resource.TestCheckNoResourceAttr(addr, "source"),
+				resource.TestCheckResourceAttr(addr, "source", `{"kind":"metric"}`),
 				func(*terraform.State) error {
 					if b := patch(); !sameJSON(b["source"], map[string]any{"kind": "metric"}) {
 						return fmt.Errorf("update sent source %v", b["source"])
@@ -514,6 +515,18 @@ resource "temps_otel_alert_rule" "r" {
 			ExpectError: regexp.MustCompile(`(?s)A log alert counts lines.*"sum"`),
 		},
 		{Config: rule(metric)},
+		{ResourceName: addr, ImportState: true, ImportStateVerify: true},
+		{
+			Config: rule(metric + `
+  source                         = jsonencode({ kind = "metric" })
+  label_filters                  = jsonencode([])
+  group_by                       = []
+  dynamic_alerts                 = false
+  max_series                     = 20
+  grouped_notification_threshold = 5`),
+			ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+		},
+		{ResourceName: addr, ImportState: true, ImportStateVerify: true},
 	}, func(*terraform.State) error {
 		var n int
 		f.with(func() { n = len(f.otelRules) })

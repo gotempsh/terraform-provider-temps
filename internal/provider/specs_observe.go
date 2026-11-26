@@ -99,8 +99,9 @@ func projectQuery(v gvals) url.Values {
 
 var otelPerms = []string{"otel:read", "otel:write"}
 
-// What Temps uses for an alert rule's series settings left out of a request,
-// and the series it gives a log alert (temps-otel's metric alert service).
+// What Temps uses for an alert rule's series settings left out of a create
+// (its update leaves them unchanged, so they are Terraform defaults too), and
+// the series it gives a log alert (temps-otel's metric alert service).
 const (
 	defaultMaxSeries        = 20
 	defaultGroupedThreshold = 5
@@ -147,8 +148,8 @@ var otelAlertRuleSpec = &gspec{
 		{Name: "aggregation", Kind: kString, Required: true,
 			OneOf: []string{"avg", "sum", "min", "max", "count", "rate", "p50", "p90", "p95", "p99"},
 			Desc:  "How the metric's points in a window are combined. A log alert counts lines: use `count`."},
-		{Name: "source", Kind: kJSON, Clearable: true, ClearWith: map[string]any{"kind": "metric"}, Subset: true,
-			Desc: "What the rule watches: `jsonencode({ kind = \"metric\" })` (used when unset) or " +
+		{Name: "source", Kind: kJSON, Optional: true, Default: `{"kind":"metric"}`, Subset: true,
+			Desc: "What the rule watches: `jsonencode({ kind = \"metric\" })` (the default) or " +
 				"`jsonencode({ kind = \"logs\", saved_search_id = 3 })`."},
 		{Name: "detection_config", Kind: kJSON, Required: true, Subset: true,
 			Desc: "The detector, for example `jsonencode({ kind = \"static\", comparator = \"gt\", threshold = 500 })`. " +
@@ -158,18 +159,18 @@ var otelAlertRuleSpec = &gspec{
 			Desc: "Seconds the breach must last before the alarm fires; `0` fires at once."},
 		{Name: "severity", Kind: kString, Required: true, OneOf: []string{"info", "warning", "critical"}, Desc: "Severity of the alarm."},
 		{Name: "enabled", Kind: kBool, Optional: true, Default: true, Desc: "Evaluate the rule."},
-		{Name: "label_filters", Kind: kJSON, Clearable: true, ClearWith: []any{},
+		{Name: "label_filters", Kind: kJSON, Optional: true, Default: "[]",
 			Desc: "Label equality filters, all of which must match: `jsonencode([[\"region\", \"eu\"]])`. At most 10. " +
-				"Unset matches every series."},
-		{Name: "group_by", Kind: kStringList, Clearable: true, ClearWith: []any{},
-			Desc: "Label keys to break the metric down by, at most 2. Unset watches the aggregate."},
-		{Name: "dynamic_alerts", Kind: kBool, Clearable: true, ClearWith: false,
-			Desc: "With `group_by`, fire one alarm per breaching series instead of one for the aggregate. Unset is `false`."},
-		{Name: "max_series", Kind: kInt, Clearable: true, ClearWith: int64(defaultMaxSeries),
-			Desc: fmt.Sprintf("Most series evaluated with `dynamic_alerts`, 1-100. Unset is %d.", defaultMaxSeries)},
-		{Name: "grouped_notification_threshold", Kind: kInt, Clearable: true, ClearWith: int64(defaultGroupedThreshold),
+				"The default, `[]`, matches every series."},
+		{Name: "group_by", Kind: kStringList, Optional: true, Default: []string{},
+			Desc: "Label keys to break the metric down by, at most 2. The default, `[]`, watches the aggregate."},
+		{Name: "dynamic_alerts", Kind: kBool, Optional: true, Default: false,
+			Desc: "With `group_by`, fire one alarm per breaching series instead of one for the aggregate. Defaults to `false`."},
+		{Name: "max_series", Kind: kInt, Optional: true, Default: int64(defaultMaxSeries),
+			Desc: fmt.Sprintf("Most series evaluated with `dynamic_alerts`, 1-100. Defaults to `%d`.", defaultMaxSeries)},
+		{Name: "grouped_notification_threshold", Kind: kInt, Optional: true, Default: int64(defaultGroupedThreshold),
 			Desc: fmt.Sprintf("When more series than this start firing at once, only the first notification gets charts, "+
-				"1-1000. Unset is %d.", defaultGroupedThreshold)},
+				"1-1000. Defaults to `%d`.", defaultGroupedThreshold)},
 		{Name: "detection_kind", Kind: kString, Computed: true, Desc: "Kind of the detector."},
 		{Name: "last_state", Kind: kString, Computed: true, Volatile: true, Desc: "`ok`, `firing` or `unknown`."},
 	},

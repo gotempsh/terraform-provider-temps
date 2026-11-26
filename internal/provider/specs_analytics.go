@@ -20,10 +20,10 @@ var analyticsGoalSpec = &gspec{
 		{Name: "name", Kind: kString, Required: true, Desc: "Name of the goal, unique in the project."},
 		{Name: "kind", Kind: kString, Required: true, OneOf: []string{"event", "page"}, Desc: "What counts as a conversion."},
 		{Name: "event_name", Kind: kString, Clearable: true, Desc: "Custom event that converts (`event`)."},
-		{Name: "event_filter", Kind: kJSON, Clearable: true, ClearWith: []any{}, Subset: true,
+		{Name: "event_filter", Kind: kJSON, Optional: true, Default: "[]", Subset: true,
 			Desc: "Conditions a conversion must meet, as in funnel steps: " +
 				"`jsonencode([{ type = \"custom_data\", value = { path = \"plan\", value = \"pro\" } }])`. " +
-				"Temps applies them to page goals too; unset has no conditions."},
+				"Temps applies them to page goals too. The default, `[]`, has none."},
 		{Name: "page_path", Kind: kString, Clearable: true, Desc: "Page path that converts (`page`), for example `/thank-you`."},
 		{Name: "revenue_property", Kind: kString, Clearable: true, Desc: "Event property holding the conversion's revenue."},
 		{Name: "revenue_currency", Kind: kString, Clearable: true, Desc: "ISO 4217 currency of the revenue, in capitals (`EUR`)."},

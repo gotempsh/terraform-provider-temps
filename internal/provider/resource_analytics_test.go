@@ -65,7 +65,7 @@ resource "temps_analytics_goal" "g" {
 		{
 			Config: page,
 			Check: resource.ComposeAggregateTestCheckFunc(
-				resource.TestCheckNoResourceAttr(addr, "event_filter"),
+				resource.TestCheckResourceAttr(addr, "event_filter", "[]"),
 				func(*terraform.State) error {
 					var filter any
 					f.with(func() { filter = f.goals[id]["event_filter"] })

@@ -30,6 +30,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -81,9 +82,7 @@ type gfield struct {
 	Clearable bool
 	// ClearWith is sent instead of null when a Clearable value is removed,
 	// for PATCH endpoints where null means "unchanged" and an empty string
-	// clears. With "", an empty string read back is also treated as unset;
-	// any other ClearWith read back while the attribute is unset (the
-	// server's default) keeps it unset.
+	// clears. With "", an empty string read back is also treated as unset.
 	ClearWith any
 	Sensitive bool
 	ForceNew  bool
@@ -102,7 +101,10 @@ type gfield struct {
 	// document while every configured key still has the configured value.
 	Subset bool
 	OneOf  []string
-	// Default for an optional string, bool or int left out of configuration.
+	// Default for an optional string, bool, int or string list ([]string)
+	// left out of configuration. Matching the server's own default makes
+	// removing the attribute restore it, on endpoints that leave an absent
+	// key unchanged.
 	Default any
 	// ZeroOK accepts 0 as an imported ID (the control-plane node is 0).
 	ZeroOK bool
@@ -406,8 +408,16 @@ func (r *genericResource) attribute(f *gfield) schema.Attribute {
 				pm = append(pm, listplanmodifier.RequiresReplace())
 			}
 		}
-		return schema.ListAttribute{Required: required, Optional: optional, Computed: computed, Sensitive: sensitive,
+		a := schema.ListAttribute{Required: required, Optional: optional, Computed: computed, Sensitive: sensitive,
 			ElementType: elemType(f.Kind), MarkdownDescription: desc, PlanModifiers: pm}
+		if d, ok := f.Default.([]string); ok {
+			elems := make([]attr.Value, len(d))
+			for i, e := range d {
+				elems[i] = types.StringValue(e)
+			}
+			a.Default = listdefault.StaticValue(types.ListValueMust(types.StringType, elems))
+		}
+		return a
 	case kStringSet, kIntSet:
 		var pm []planmodifier.Set
 		if keep {
@@ -1045,11 +1055,6 @@ func (r *genericResource) apply(v gvals, obj map[string]any, importing bool, dia
 		if s, isStr := raw.(string); isStr && s == "" && f.ClearWith == "" {
 			raw = nil
 		}
-		// The value a removal sends, read back while unset, is the server's
-		// default: the attribute stays unset.
-		if f.Clearable && f.ClearWith != nil && f.ClearWith != "" && isNullValue(v[f.Name]) && sameJSON(raw, f.ClearWith) {
-			raw = nil
-		}
 		nv, err := fromJSON(f, raw, v[f.Name])
 		if err != nil {
 			diags.AddError("Unexpected response from Temps", err.Error())
@@ -1067,9 +1072,6 @@ func (r *genericResource) apply(v gvals, obj map[string]any, importing bool, dia
 		}
 	}
 }
-
-// isNullValue reports whether an attribute value is absent or null.
-func isNullValue(v attr.Value) bool { return v == nil || v.IsNull() }
 
 func (r *genericResource) what(v gvals) string {
 	id := scalarString(v["id"])

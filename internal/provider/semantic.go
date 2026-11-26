@@ -29,14 +29,6 @@ func jsonEqual(a, b string) bool {
 	return reflect.DeepEqual(va, vb)
 }
 
-// sameJSON reports whether two decoded values encode to equal JSON (a
-// response's json.Number 20 and a Go 20).
-func sameJSON(a, b any) bool {
-	ja, errA := json.Marshal(a)
-	jb, errB := json.Marshal(b)
-	return errA == nil && errB == nil && jsonEqual(string(ja), string(jb))
-}
-
 // jsonValue keeps the configured spelling of a JSON value when the server's
 // is semantically equal, so re-encoding never shows as drift.
 func jsonValue(prior types.String, server []byte) types.String {
