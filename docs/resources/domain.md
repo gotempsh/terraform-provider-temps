@@ -6,6 +6,7 @@ description: |-
   A domain Temps obtains and renews a TLS certificate for. A dns-01 challenge needs a DNS provider managing the zone, or the dns_challenge_* record created by hand.
   Import with <id>.
   Required API key permissions: domains:read, domains:create, domains:delete.
+  Certificate settings need domains:write as well.
 ---
 
 # temps_domain (Resource)
@@ -16,12 +17,21 @@ Import with `<id>`.
 
 Required API key permissions: `domains:read`, `domains:create`, `domains:delete`.
 
+Certificate settings need `domains:write` as well.
+
 ## Example Usage
 
 ```terraform
 resource "temps_domain" "wildcard" {
   domain         = "*.apps.example.com"
   challenge_type = "dns-01"
+
+  # Renew three weeks ahead and warn 10 days before expiry. Left out,
+  # alerts_enabled follows the instance SSL expiry alert setting.
+  certificate_settings = {
+    renewal_days = 21
+    alert_days   = 10
+  }
 }
 ```
 
@@ -34,6 +44,7 @@ resource "temps_domain" "wildcard" {
 
 ### Optional
 
+- `certificate_settings` (Attributes) Renewal and expiry-alert policy of the certificate. Left out, Terraform does not manage it and keeps what the domain has. Once set, a value you leave out returns to its default; `certificate_settings = {}` resets them all. Saving it changes nothing about the current certificate: the ACME challenge of future orders is kept as Temps has it. Read back from `GET /domains/{id}/certificate-settings`. (see [below for nested schema](#nestedatt--certificate_settings))
 - `challenge_type` (String) ACME challenge used to prove control of the domain. One of `http-01`, `dns-01`.
 
 ### Read-Only
@@ -44,6 +55,15 @@ resource "temps_domain" "wildcard" {
 - `is_wildcard` (Boolean) Whether the domain is a wildcard.
 - `last_error` (String) Last certificate error.
 - `status` (String) Certificate status.
+
+<a id="nestedatt--certificate_settings"></a>
+### Nested Schema for `certificate_settings`
+
+Optional:
+
+- `alert_days` (Number) Warn this many days before expiry (1–90) instead of the instance SSL expiry threshold. Left out, the instance setting applies.
+- `alerts_enabled` (Boolean) Turn expiry alerts on or off for this domain. Left out, the instance setting applies.
+- `renewal_days` (Number) Start ACME renewal this many days before expiry (1–90, default `30`). Imported certificates are not renewed automatically whatever it says.
 
 ## Import
 

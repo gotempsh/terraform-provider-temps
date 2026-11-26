@@ -178,7 +178,11 @@ func joinTicks(vals []string) string { return strings.Join(vals, "`, `") }
 // The nested attributes have to be computed: Terraform otherwise takes an
 // object holding values of optional-only attributes as configured before,
 // and plans it away when the configuration leaves it out.
-type settingOf struct{}
+type settingOf struct {
+	// Default is planned instead of null for a value left out of a
+	// configured object, when the server never stores null.
+	Default attr.Value
+}
 
 func (settingOf) Description(context.Context) string {
 	return "Left out of a configured object, the value is reset; with the object left out, the current value is kept."
@@ -186,7 +190,7 @@ func (settingOf) Description(context.Context) string {
 func (m settingOf) MarkdownDescription(ctx context.Context) string { return m.Description(ctx) }
 
 // plan returns the planned value, or nil to keep the framework's.
-func (settingOf) plan(ctx context.Context, cfg tfsdk.Config, p path.Path, config, state attr.Value, null attr.Value, diags *diag.Diagnostics) attr.Value {
+func (m settingOf) plan(ctx context.Context, cfg tfsdk.Config, p path.Path, config, state attr.Value, null attr.Value, diags *diag.Diagnostics) attr.Value {
 	if !config.IsNull() {
 		return nil
 	}
@@ -197,6 +201,9 @@ func (settingOf) plan(ctx context.Context, cfg tfsdk.Config, p path.Path, config
 			return nil
 		}
 		return state
+	}
+	if m.Default != nil {
+		return m.Default
 	}
 	return null
 }

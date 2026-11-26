@@ -6,6 +6,7 @@ package provider
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gotempsh/terraform-provider-temps/internal/client"
 )
@@ -23,8 +24,8 @@ type fakeSettings struct {
 	// notAdmin makes the workload mode endpoints answer 403, as for a key
 	// that is not an instance administrator's.
 	notAdmin bool
-	// old makes these endpoints answer like a server that predates them: a
-	// bare 404 without problem details.
+	// old makes the settings endpoints answer like a server that predates
+	// them: a bare 404 without problem details.
 	old bool
 
 	certDomains map[int64]map[string]any // domain ID -> domain document
@@ -44,8 +45,9 @@ func inRange(v *int64, lo, hi int64) bool { return v == nil || (*v >= lo && *v <
 func (f *fakeTemps) settingsRoutes(route func(string, func(http.ResponseWriter, *http.Request))) {
 	st := f.st
 	h := func(pattern string, fn func(http.ResponseWriter, *http.Request)) {
+		isNew := !strings.HasPrefix(pattern, "POST /api/domains") && strings.Count(pattern, "/") > 3
 		route(pattern, func(w http.ResponseWriter, r *http.Request) {
-			if st.old {
+			if st.old && isNew {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
@@ -215,4 +217,76 @@ func (f *fakeTemps) settingsRoutes(route func(string, func(http.ResponseWriter, 
 		writeJSON(w, 200, map[string]any{"previous_mode": prev, "workload": workloadOf(s)})
 	})
 
+	// ------------------------------------------- TLS domains and their settings
+	h("POST /api/domains", func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = decode(r, &req)
+		name, _ := req["domain"].(string)
+		method, _ := req["challenge_type"].(string)
+		if method == "" {
+			method = "http-01"
+		}
+		id := f.nextID()
+		st.certDomains[id] = map[string]any{"id": id, "domain": name, "verification_method": method, "status": "pending",
+			"is_wildcard": strings.HasPrefix(name, "*."), "dns_challenge_token": nil, "dns_challenge_value": nil, "last_error": nil}
+		writeJSON(w, 201, st.certDomains[id])
+	})
+	h("GET /api/domains/{id}", func(w http.ResponseWriter, r *http.Request) {
+		d, ok := st.certDomains[pathID(r, "id")]
+		if !ok {
+			problem(w, 404, "Domain Not Found", "Domain "+r.PathValue("id")+" not found")
+			return
+		}
+		writeJSON(w, 200, d)
+	})
+	h("DELETE /api/domains/{domain}", func(w http.ResponseWriter, r *http.Request) {
+		for id, d := range st.certDomains {
+			if d["domain"] == r.PathValue("domain") {
+				delete(st.certDomains, id)
+				delete(st.certs, id)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		problem(w, 404, "Domain Not Found", "Domain "+r.PathValue("domain")+" not found")
+	})
+	// Like Temps: a domain without saved settings reports the defaults, with
+	// the challenge of its last order.
+	certOf := func(id int64) map[string]any {
+		d := st.certDomains[id]
+		out := map[string]any{"challenge_type": d["verification_method"], "renewal_days": 30, "alert_days": nil, "alerts_enabled": nil}
+		for k, v := range st.certs[id] {
+			out[k] = v
+		}
+		out["renewal_mode"] = "acme"
+		return out
+	}
+	h("GET /api/domains/{id}/certificate-settings", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r, "id")
+		if _, ok := st.certDomains[id]; !ok {
+			problem(w, 404, "Domain Not Found", "Domain "+r.PathValue("id")+" not found")
+			return
+		}
+		writeJSON(w, 200, certOf(id))
+	})
+	h("PUT /api/domains/{id}/certificate-settings", func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r, "id")
+		if _, ok := st.certDomains[id]; !ok {
+			problem(w, 404, "Domain Not Found", "Domain "+r.PathValue("id")+" not found")
+			return
+		}
+		var req map[string]any
+		_ = decode(r, &req)
+		days, _ := req["renewal_days"].(float64)
+		ct, _ := req["challenge_type"].(string)
+		alert, hasAlert := req["alert_days"].(float64)
+		_, sentAlerts := req["alerts_enabled"]
+		_, sentAlertDays := req["alert_days"]
+		if !sentAlerts || !sentAlertDays || (ct != "http-01" && ct != "dns-01") || days < 1 || days > 90 || (hasAlert && (alert < 1 || alert > 90)) {
+			problem(w, 400, "Invalid Domain", "Invalid certificate settings: choose http-01 or dns-01 (wildcards require dns-01), with thresholds between 1 and 90 days")
+			return
+		}
+		st.certs[id] = map[string]any{"challenge_type": ct, "renewal_days": days, "alert_days": req["alert_days"], "alerts_enabled": req["alerts_enabled"]}
+		writeJSON(w, 200, certOf(id))
+	})
 }

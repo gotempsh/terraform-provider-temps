@@ -166,6 +166,7 @@ func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource 
 		newEdgeRuleResource,
 		newAPIKeyResource,
 		newInboundFilterResource,
+		newDomainResource, // domainSpec plus certificate settings
 	}
 	for _, s := range genericSpecs {
 		rs = append(rs, genericFactory(s))
@@ -185,7 +186,6 @@ var genericSpecs = []*gspec{
 	globalIPRuleSpec,
 	dnsProviderSpec,
 	dnsProviderDomainSpec,
-	domainSpec,
 	emailProviderSpec,
 	emailDomainSpec,
 	emailDomainProjectSpec,
