@@ -111,7 +111,7 @@ func newEngineFake(t *testing.T) *engineFake {
 	h("DELETE /api/dns-providers/{id}", func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
 		delete(f.dns, pathID(r, "id"))
 		delete(f.zones, pathID(r, "id"))
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
 	})
 	h("POST /api/dns-providers/{pid}/domains", func(w http.ResponseWriter, r *http.Request, b map[string]any) {
 		pid := pathID(r, "pid")
@@ -152,7 +152,7 @@ func newEngineFake(t *testing.T) *engineFake {
 	})
 	h("DELETE /api/dns-providers/{pid}/domains/{domain}", func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
 		delete(f.zones[pathID(r, "pid")], r.PathValue("domain"))
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	// Secrets: POST creates or overwrites, the list masks nothing because it
@@ -176,7 +176,7 @@ func newEngineFake(t *testing.T) *engineFake {
 	})
 	h("DELETE /api/settings/secrets/{name}", func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
 		delete(f.secrets, r.PathValue("name"))
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	// Vaults carry a version every write must name.
@@ -214,7 +214,7 @@ func newEngineFake(t *testing.T) *engineFake {
 	})
 	h("DELETE /api/access-vaults/{id}", func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
 		delete(f.vaults, pathID(r, "id"))
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	// Settings: one document, merged on write, a secret masked on read.
