@@ -68,7 +68,7 @@ func (r *domainResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "Warn this many days before expiry (1–90) instead of the instance SSL expiry " +
 					"threshold. Left out, the instance setting applies."},
 			"alerts_enabled": schema.BoolAttribute{Optional: true, Computed: true,
-				PlanModifiers: []planmodifier.Bool{settingOf{}},
+				PlanModifiers:       []planmodifier.Bool{settingOf{}},
 				MarkdownDescription: "Turn expiry alerts on or off for this domain. Left out, the instance setting applies."},
 		},
 	}
