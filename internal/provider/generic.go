@@ -1364,14 +1364,6 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// unixMillis formats a millisecond timestamp the API returns as RFC 3339.
-func unixMillis(raw any) any {
-	if n, ok := numberInt(raw); ok {
-		return time.UnixMilli(n).UTC().Format(time.RFC3339)
-	}
-	return raw
-}
-
 // sameInstant reports whether two RFC 3339 strings name the same time.
 func sameInstant(a, b attr.Value) bool {
 	as, aok := a.(types.String)
