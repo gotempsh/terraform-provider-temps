@@ -31,6 +31,7 @@ var (
 var (
 	_ resource.Resource                = &projectGroupResource{}
 	_ resource.ResourceWithImportState = &projectGroupResource{}
+	_ resource.ResourceWithModifyPlan  = &projectGroupResource{}
 	_ resource.Resource                = &projectGroupMembershipResource{}
 	_ resource.ResourceWithImportState = &projectGroupMembershipResource{}
 	_ resource.Resource                = &projectGroupVariableResource{}
@@ -106,8 +107,9 @@ func (r *projectGroupResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 	if plan.Repository != nil {
-		if updated := r.writeGroupRepository(ctx, g.ID, plan.Repository, nil, &resp.Diagnostics); updated != nil {
+		if updated := r.writeGroupRepository(ctx, g.ID, plan.Repository, nil, false, &resp.Diagnostics); updated != nil {
 			g = updated
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateRepositoryManaged, []byte("true"))...)
 		} else {
 			// The group exists without its repository: keep it in state so
 			// it is not orphaned (Terraform marks it tainted).
@@ -166,14 +168,43 @@ func (r *projectGroupResource) Update(ctx context.Context, req resource.UpdateRe
 		addAPIError(&resp.Diagnostics, "Unable to update project group "+formatID(id), err, projectGroupPermissions)
 		return
 	}
-	if updated := r.writeGroupRepository(ctx, id, plan.Repository, state.Repository, &resp.Diagnostics); updated != nil {
+	managed, diags := req.Private.GetKey(ctx, privateRepositoryManaged)
+	resp.Diagnostics.Append(diags...)
+	if updated := r.writeGroupRepository(ctx, id, plan.Repository, state.Repository, len(managed) > 0, &resp.Diagnostics); updated != nil {
 		g = updated
 	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if plan.Repository != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateRepositoryManaged, []byte("true"))...)
+	} else {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateRepositoryManaged, nil)...)
+	}
 	plan.fromAPI(g, false)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// ModifyPlan explains a plan that drops an imported repository the
+// configuration never set: Terraform stops tracking it, Temps keeps it.
+func (r *projectGroupResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan, state projectGroupModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() || plan.Repository != nil || state.Repository == nil {
+		return
+	}
+	managed, diags := req.Private.GetKey(ctx, privateRepositoryManaged)
+	resp.Diagnostics.Append(diags...)
+	if len(managed) == 0 {
+		resp.Diagnostics.AddWarning("The group's repository stays in Temps",
+			fmt.Sprintf("Project group %s was imported with repository %s/%s, which the configuration does not set. Terraform stops "+
+				"tracking it and leaves it, and the projects following it, unchanged. Add the repository argument to manage it.",
+				state.ID.ValueString(), state.Repository.RepoOwner.ValueString(), state.Repository.RepoName.ValueString()))
+	}
 }
 
 func (r *projectGroupResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -293,7 +324,14 @@ func (r *projectGroupMembershipResource) Create(ctx context.Context, req resourc
 	}
 	g, err := r.client.GetProjectGroup(ctx, gid)
 	if err != nil {
-		addAPIError(&resp.Diagnostics, fmt.Sprintf("Unable to read project group %d", gid), err, projectGroupMembershipPermissions)
+		// The project is in the group now: keep the membership in state
+		// (Terraform marks it tainted) so it is not orphaned. An
+		// inherit_repository that was not written is left null, so the next
+		// apply sets it.
+		addAPIError(&resp.Diagnostics, fmt.Sprintf("Project %d was added to project group %d, but reading the group back failed", pid, gid), err, projectGroupMembershipPermissions)
+		plan.InheritRepository = types.BoolUnknown()
+		plan.fromGroup(nil)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
 	member := g.Member(pid)

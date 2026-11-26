@@ -386,17 +386,23 @@ func (r *serviceResource) Create(ctx context.Context, req resource.CreateRequest
 	details, err := r.waitRunning(ctx, s.ID, s.Name)
 	if err == nil {
 		// Settings on their own endpoints need the service to exist and run.
-		if r.applySettings(ctx, s.ID, &plan, nil, &resp.Diagnostics) {
+		var settingDiags diag.Diagnostics
+		if r.applySettings(ctx, s.ID, &plan, nil, &settingDiags) {
 			details, err = r.waitRunning(ctx, s.ID, s.Name)
 		}
 		if err == nil {
 			// Record what the service has, even after a refused setting.
 			var readDiags diag.Diagnostics
 			r.readSettings(ctx, s.ID, &plan, false, &readDiags)
-			if !resp.Diagnostics.HasError() {
-				resp.Diagnostics.Append(readDiags...)
+			if !settingDiags.HasError() {
+				settingDiags.Append(readDiags...)
 			}
 		}
+		// An error taints the new service, and replacing it destroys its
+		// data or, under deletion_protection, fails: say how to keep it.
+		appendWithNote(&resp.Diagnostics, settingDiags, "Temps service "+plan.Name.String()+" was created and is kept in state, "+
+			"but Terraform marks it tainted, so the next apply would replace it (deleting its data, or failing while "+
+			"deletion_protection is on). To keep it, run terraform untaint on this resource, fix the setting and apply again.")
 	}
 	plan.nullSettings()
 	if details != nil {
@@ -538,7 +544,9 @@ func (r *serviceResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if state.DeletionProtection.ValueBool() {
 		resp.Diagnostics.AddError("Temps service is protected against deletion",
 			fmt.Sprintf("temps_service %s (id %s) has deletion_protection = true. Destroying it deletes its data. "+
-				"Set deletion_protection = false, run terraform apply, then destroy again.", state.Name, state.ID.ValueString()))
+				"Set deletion_protection = false, run terraform apply, then destroy again. If Terraform is replacing it because "+
+				"it is tainted (a setting failed when it was created), run terraform untaint on this resource instead to keep it.",
+				state.Name, state.ID.ValueString()))
 		return
 	}
 	timeout, d := state.Timeouts.Delete(ctx, defaultServiceTimeout)
@@ -582,4 +590,15 @@ func (r *serviceResource) ImportState(ctx context.Context, req resource.ImportSt
 	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateImported, []byte("true"))...)
+}
+
+// appendWithNote adds diags to out, ending the detail of every error with note.
+func appendWithNote(out *diag.Diagnostics, diags diag.Diagnostics, note string) {
+	for _, d := range diags {
+		if d.Severity() == diag.SeverityError {
+			out.AddError(d.Summary(), d.Detail()+"\n\n"+note)
+			continue
+		}
+		out.Append(d)
+	}
 }

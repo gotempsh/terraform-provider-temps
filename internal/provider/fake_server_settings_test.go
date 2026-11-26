@@ -39,6 +39,10 @@ type fakeSettings struct {
 	repoSets    int  // successful group repository writes
 	inheritSets int  // successful repository inheritance writes
 	syncFails   bool // following projects fail to take a new group repository
+	// failGroupGetAfterAdd makes the next GET of a group fail with 500 once
+	// a project was added to it.
+	failGroupGetAfterAdd bool
+	failNextGroupGet     bool
 }
 
 // touchFlagEnv gives a written flag environment row a new revision, as

@@ -96,7 +96,10 @@ func (m *flagEnvModel) fromAPI(e client.FeatureFlagEnvironment, imported bool, d
 }
 
 // set writes the value and kill switch, then the rules when they are
-// configured and differ from prior (nil on create).
+// configured and differ from prior (nil on create). It reports whether plan
+// now holds state to save: true once the value write succeeded, even if the
+// rules write then failed (plan keeps the prior rules, so the next apply
+// retries them and the override is never left untracked).
 func (r *flagEnvResource) set(ctx context.Context, plan, prior *flagEnvModel, diags *diag.Diagnostics, verb string) bool {
 	pid, key, env := plan.ProjectID.ValueInt64(), plan.Key.ValueString(), plan.EnvironmentID.ValueInt64()
 	body := client.SetFeatureFlagEnvironmentRequest{Enabled: plan.Enabled.ValueBool()}
@@ -111,17 +114,23 @@ func (r *flagEnvResource) set(ctx context.Context, plan, prior *flagEnvModel, di
 	configured := plan.Rules
 	if configured != nil && (prior == nil || !reflect.DeepEqual(configured, prior.Rules)) {
 		// The value write just saved the row: its revision guards the rules.
-		e, err = r.client.SetFeatureFlagRules(ctx, pid, key, env, flagRulesRequest(configured), e.UpdatedAt)
+		withRules, err := r.client.SetFeatureFlagRules(ctx, pid, key, env, flagRulesRequest(configured), e.UpdatedAt)
 		if err != nil {
 			addAPIError(diags, fmt.Sprintf("Unable to set the targeting rules of flag %q in environment %d of project %d", key, env, pid), err, flagPermissions)
-			return false
+			plan.Rules = nil
+			if prior != nil {
+				plan.Rules = prior.Rules
+			}
+			plan.fromAPI(*e, false, diags)
+			return true
 		}
+		e = withRules
 	}
 	plan.fromAPI(*e, false, diags)
 	if configured == nil {
 		plan.Rules = nil
 	}
-	return !diags.HasError()
+	return true
 }
 
 func (r *flagEnvResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

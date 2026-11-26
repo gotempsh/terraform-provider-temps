@@ -370,3 +370,76 @@ func TestUnitServiceTLSRestartWaits(t *testing.T) {
 		},
 	}, h.serviceDestroyed())
 }
+
+// Overrides Temps saved but has not applied yet are recreated by an apply
+// with apply_immediately, even when they already match the configuration.
+func TestUnitServiceHealthcheckPendingRecreate(t *testing.T) {
+	h := unitHarness(t)
+	applied := func(want int) resource.TestCheckFunc {
+		return h.settingsCheck(func(id int64, st *fakeSettings) error {
+			if st.applied[id] != want {
+				return fmt.Errorf("healthcheck applied %d times, want %d", st.applied[id], want)
+			}
+			return nil
+		})
+	}
+	h.run([]resource.TestStep{
+		{
+			Config:           svcSettingsConfig(h, "postgres", `  health_check = { retries = 3, apply_immediately = true }`),
+			ConfigPlanChecks: emptyPlanAfterApply(),
+			Check:            applied(1),
+		},
+		{
+			// A recreate is pending (an earlier one failed, or the overrides
+			// were saved again elsewhere): the next apply recreates.
+			PreConfig:        func() { h.fake.with(func() { h.fake.st.applied[h.onlyService()] = 0 }) },
+			Config:           svcSettingsConfig(h, "postgres", `  health_check = { retries = 3, apply_immediately = true }`),
+			ConfigPlanChecks: expectAction(serviceAddr, plancheck.ResourceActionUpdate),
+			Check:            applied(1),
+		},
+		{
+			Config:           svcSettingsConfig(h, "postgres", `  health_check = { retries = 4, apply_immediately = false }`),
+			ConfigPlanChecks: emptyPlanAfterApply(),
+			Check:            applied(0),
+		},
+		{
+			// Turning apply_immediately on applies what is pending.
+			Config:           svcSettingsConfig(h, "postgres", `  health_check = { retries = 4, apply_immediately = true }`),
+			ConfigPlanChecks: expectAction(serviceAddr, plancheck.ResourceActionUpdate),
+			Check:            applied(1),
+		},
+	}, h.serviceDestroyed())
+}
+
+// A setting refused while creating a protected service leaves it tainted;
+// both the error and the refused replacement say how to keep it.
+func TestUnitServiceCreateRefusedSettingProtected(t *testing.T) {
+	h := unitHarness(t)
+	svc := func(extra string) string {
+		return h.config(`
+resource "temps_service" "db" {
+  name         = "db"
+  service_type = "s3"
+  %s
+}`, extra)
+	}
+	h.run([]resource.TestStep{
+		{
+			Config:      svc(`health_check = { interval_secs = 30 }`),
+			ExpectError: regexp.MustCompile(`(?s)Unable to set the healthcheck.*no Docker healthcheck.*was created.*terraform\s+untaint`),
+		},
+		{
+			Config:      svc(""),
+			ExpectError: regexp.MustCompile(`(?s)protected against deletion.*tainted.*terraform\s+untaint`),
+		},
+		{
+			Config: h.config(`
+removed {
+  from = temps_service.db
+  lifecycle {
+    destroy = false
+  }
+}`),
+		},
+	}, nil)
+}

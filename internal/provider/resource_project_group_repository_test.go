@@ -292,3 +292,82 @@ func TestUnitProjectGroupInheritOldServer(t *testing.T) {
 		ExpectError: regexp.MustCompile(`(?s)Unable to set inherit_repository.*older than group repositories`),
 	}}, nil)
 }
+
+// An imported group's repository that the configuration does not set is
+// left in Temps, with its followers; it is removed only once the
+// configuration has set it and then drops it.
+func TestUnitProjectGroupRepositoryImportedNotConfigured(t *testing.T) {
+	h := unitHarness(t)
+	const gid, follower = 9001, 42
+	h.fake.with(func() {
+		h.fake.x.groups[gid] = &client.ProjectGroup{ID: gid, Name: "Web apps", Slug: h.name("web"),
+			Repository: &client.ProjectGroupRepository{RepoOwner: "example-org", RepoName: "shop", MainBranch: "main", GitProviderConnectionID: ptr(int64(7))},
+			Projects:   []client.ProjectGroupMember{{ID: follower, Name: "Shop", Slug: "shop", InheritsRepository: ptr(true)}}}
+	})
+	group := func(repo string) string {
+		return h.config(`
+import {
+  to = temps_project_group.web
+  id = "%d"
+}
+
+resource "temps_project_group" "web" {
+  name = "Web apps"
+  slug = %q
+  %s
+}`, gid, h.name("web"), repo)
+	}
+	h.run([]resource.TestStep{
+		{
+			Config:           group(""),
+			ConfigPlanChecks: emptyPlanAfterApply(),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckNoResourceAttr(groupAddr, "repository.repo_owner"),
+				h.groupState(func(g *client.ProjectGroup) error {
+					if g.Repository == nil || g.Repository.RepoName != "shop" {
+						return fmt.Errorf("imported group lost its repository: %+v", g.Repository)
+					}
+					return wantFollowing(true)(g)
+				}),
+			),
+		},
+		{
+			Config:           group(connectedRepo),
+			ConfigPlanChecks: expectAction(groupAddr, plancheck.ResourceActionUpdate),
+			Check:            resource.TestCheckResourceAttr(groupAddr, "repository.repo_name", "shop"),
+		},
+		{
+			// Now managed: dropping it removes it.
+			Config:           group(""),
+			ConfigPlanChecks: expectAction(groupAddr, plancheck.ResourceActionUpdate),
+			Check: h.groupState(func(g *client.ProjectGroup) error {
+				if g.Repository != nil {
+					return fmt.Errorf("group still has repository %+v", g.Repository)
+				}
+				return wantFollowing(false)(g)
+			}),
+		},
+	}, nil)
+}
+
+// A membership whose group cannot be read back after the project joined is
+// kept in state, so the next apply replaces it instead of failing on a
+// project that is already in a group.
+func TestUnitProjectGroupMembershipReadBackFails(t *testing.T) {
+	h := unitHarness(t)
+	h.fake.st.failGroupGetAfterAdd = true
+	h.run([]resource.TestStep{
+		{
+			Config:      groupRepoConfig(h, "", ""),
+			ExpectError: regexp.MustCompile(`(?s)Project \d+ was added to project group \d+, but reading the group back\s+failed`),
+		},
+		{
+			PreConfig: func() { h.fake.with(func() { h.fake.st.failGroupGetAfterAdd = false }) },
+			Config:    groupRepoConfig(h, "", ""),
+			ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+				plancheck.ExpectResourceAction(memberAddr, plancheck.ResourceActionDestroyBeforeCreate),
+			}},
+			Check: h.groupState(wantFollowing(false)),
+		},
+	}, nil)
+}

@@ -56,7 +56,7 @@ func (c *Client) SetServiceHealthcheck(ctx context.Context, id int64, o Healthch
 // ApplyServiceHealthcheck recreates the service's container so its
 // healthcheck takes effect now. The service restarts briefly.
 func (c *Client) ApplyServiceHealthcheck(ctx context.Context, id int64) error {
-	return c.do(ctx, http.MethodPost, servicePath(id, "/healthcheck/apply"), nil, nil, nil)
+	return c.doSlow(ctx, http.MethodPost, servicePath(id, "/healthcheck/apply"), nil, nil, nil)
 }
 
 // ServiceTLS is GET /external-services/{id}/tls (the fields the provider uses).
@@ -80,7 +80,7 @@ func (c *Client) SetServiceTLS(ctx context.Context, id int64, mode string) (*Ser
 	var out struct {
 		TLS ServiceTLS `json:"tls"`
 	}
-	err := c.do(ctx, http.MethodPut, servicePath(id, "/tls"), nil, map[string]string{"mode": mode}, &out)
+	err := c.doSlow(ctx, http.MethodPut, servicePath(id, "/tls"), nil, map[string]string{"mode": mode}, &out)
 	return &out.TLS, err
 }
 

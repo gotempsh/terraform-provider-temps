@@ -228,10 +228,21 @@ func TestUnitFeatureFlagRulesErrors(t *testing.T) {
 	})
 	t.Run("refused by the server", func(t *testing.T) {
 		h := unitHarness(t)
-		h.run([]resource.TestStep{{
-			Config:      flagRulesConfig(h, `  rules = [{ serve_split = [{ variant = "on", weight = 60 }] }]`),
-			ExpectError: regexp.MustCompile(`(?s)Unable to set the targeting rules.*add up to 60, not 100`),
-		}}, nil)
+		h.run([]resource.TestStep{
+			{
+				Config:      flagRulesConfig(h, `  rules = [{ serve_split = [{ variant = "on", weight = 60 }] }]`),
+				ExpectError: regexp.MustCompile(`(?s)Unable to set the targeting rules.*add up to 60, not 100`),
+			},
+			{
+				// The value override was written before the rules failed, so
+				// it is in state (tainted) and replaced, not created again.
+				Config: flagRulesConfig(h, twoRules),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction(flagEnvAddr, plancheck.ResourceActionDestroyBeforeCreate),
+				}},
+				Check: h.wantRules(2),
+			},
+		}, nil)
 	})
 	t.Run("old server", func(t *testing.T) {
 		h := unitHarness(t)

@@ -652,6 +652,11 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 		notFound(w, "project group", r.PathValue("slug"))
 	})
 	h("GET /api/project-groups/{gid}", func(w http.ResponseWriter, r *http.Request) {
+		if f.st.failNextGroupGet {
+			f.st.failNextGroupGet = false
+			problem(w, 500, "Internal Server Error", "Project group "+r.PathValue("gid")+" could not be loaded")
+			return
+		}
 		if g := group(w, r); g != nil {
 			writeJSON(w, 200, g)
 		}
@@ -702,6 +707,7 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 			m.InheritsRepository = ptr(false)
 		}
 		g.Projects = append(g.Projects, m)
+		f.st.failNextGroupGet = f.st.failGroupGetAfterAdd
 		writeJSON(w, 200, g)
 	})
 	h("DELETE /api/project-groups/{gid}/projects/{pid}", func(w http.ResponseWriter, r *http.Request) {

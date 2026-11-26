@@ -89,7 +89,7 @@ resource "temps_service" "db" {
 
 Optional:
 
-- `apply_immediately` (Boolean) When `true`, recreate the container right after the overrides change so they take effect now. **The service restarts briefly** (its volumes and configuration are kept). Temps only does this for a running standalone service on the control plane. Not sent to Temps and not read back.
+- `apply_immediately` (Boolean) When `true`, recreate the container right after the overrides change so they take effect now. **The service restarts briefly** (its volumes and configuration are kept). Temps only does this for a running standalone service on the control plane. Not sent to Temps; while Temps reports overrides waiting for a recreate (an earlier recreate failed, or they were saved elsewhere) and the service can be recreated now, it reads back as `false`, so the next apply recreates it.
 - `interval_secs` (Number) Seconds between checks once the container is healthy (5–3600).
 - `retries` (Number) Consecutive failed checks that make the container unhealthy (1–10).
 - `start_interval_secs` (Number) Seconds between checks while the container starts (1–60).

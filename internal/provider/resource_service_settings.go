@@ -85,8 +85,9 @@ func serviceSettingsAttributes() map[string]schema.Attribute {
 				"apply_immediately": schema.BoolAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Bool{settingOf{}},
 					MarkdownDescription: "When `true`, recreate the container right after the overrides change so they take " +
 						"effect now. **The service restarts briefly** (its volumes and configuration are kept). Temps " +
-						"only does this for a running standalone service on the control plane. Not sent to Temps and not " +
-						"read back."},
+						"only does this for a running standalone service on the control plane. Not sent to Temps; while " +
+						"Temps reports overrides waiting for a recreate (an earlier recreate failed, or they were saved " +
+						"elsewhere) and the service can be recreated now, it reads back as `false`, so the next apply recreates it."},
 			},
 		},
 		"tls_mode": schema.StringAttribute{
@@ -189,11 +190,25 @@ func (r *serviceResource) applySettings(ctx context.Context, id int64, plan, pri
 				have = cur.Overrides
 			}
 		}
-		if !sameOverrides(want, have) {
+		changed := !sameOverrides(want, have)
+		if changed {
 			if _, err := r.client.SetServiceHealthcheck(ctx, id, want); err != nil {
 				addAPIError(diags, "Unable to set the healthcheck of "+what, err, servicePermissions)
 				return restarted
 			}
+		}
+		// Unchanged overrides still need a recreate when an earlier one
+		// failed or they were saved without applying (readSettings then
+		// records apply_immediately = false, so this update was planned).
+		if !changed && hc.ApplyImmediately.ValueBool() && prior != nil {
+			cur, err := r.client.GetServiceHealthcheck(ctx, id)
+			if err != nil {
+				addAPIError(diags, "Unable to read the healthcheck of "+what, err, servicePermissions)
+				return restarted
+			}
+			changed = cur.PendingRecreate
+		}
+		if changed {
 			if hc.ApplyImmediately.ValueBool() {
 				if err := r.client.ApplyServiceHealthcheck(ctx, id); err != nil {
 					addAPIError(diags, "Saved the healthcheck of "+what+" but could not recreate its container to apply it now", err, servicePermissions)
@@ -282,6 +297,11 @@ func (r *serviceResource) readSettings(ctx context.Context, id int64, m *service
 	}
 	switch hc, err := r.client.GetServiceHealthcheck(ctx, id); {
 	case err == nil:
+		if apply.ValueBool() && hc.PendingRecreate && hc.Capability.CanApplyNow {
+			// The overrides are saved but the container still runs the old
+			// healthcheck: plan the recreate apply_immediately asks for.
+			apply = types.BoolValue(false)
+		}
 		m.HealthCheck = healthCheckValue(hc.Overrides, apply)
 	case client.IsUnsupported(err):
 		m.HealthCheck = keep(m.HealthCheck, healthCheckAttrTypes)
