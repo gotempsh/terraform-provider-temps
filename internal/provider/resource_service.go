@@ -55,6 +55,10 @@ type serviceModel struct {
 	Parameters         types.Map      `tfsdk:"parameters"`
 	DeletionProtection types.Bool     `tfsdk:"deletion_protection"`
 	Status             types.String   `tfsdk:"status"`
+	HealthCheck        types.Object   `tfsdk:"health_check"`
+	TLSMode            types.String   `tfsdk:"tls_mode"`
+	LogIngestion       types.Object   `tfsdk:"log_ingestion"`
+	WorkloadMode       types.String   `tfsdk:"workload_mode"`
 	Timeouts           timeouts.Value `tfsdk:"timeouts"`
 }
 
@@ -69,6 +73,8 @@ func (r *serviceResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 			"S3-compatible object store. Link it to projects with `temps_service_link` to inject its connection variables.\n\n" +
 			"Creation is asynchronous; the provider waits until the service is `running` (see `timeouts`). " +
 			"`deletion_protection` defaults to `true`: set it to `false` and apply before destroying, because destroying a service deletes its data.\n\n" +
+			"Container resource limits (memory, CPU, `/dev/shm`) are not managed here: Temps has no endpoint that returns " +
+			"the configured limits, only the ones a running container has, so they could not be checked for drift.\n\n" +
 			"Required API key permissions: " + permList(servicePermissions) + ".",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{Computed: true, MarkdownDescription: "Numeric service ID.",
@@ -123,6 +129,9 @@ func (r *serviceResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 		Blocks: map[string]schema.Block{
 			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true, Update: true, Delete: true}),
 		},
+	}
+	for k, a := range serviceSettingsAttributes() {
+		resp.Schema.Attributes[k] = a
 	}
 }
 
@@ -375,6 +384,21 @@ func (r *serviceResource) Create(ctx context.Context, req resource.CreateRequest
 	// Track the service right away so a failed wait leaves it in state (tainted).
 	plan.ID = types.StringValue(formatID(s.ID))
 	details, err := r.waitRunning(ctx, s.ID, s.Name)
+	if err == nil {
+		// Settings on their own endpoints need the service to exist and run.
+		if r.applySettings(ctx, s.ID, &plan, nil, &resp.Diagnostics) {
+			details, err = r.waitRunning(ctx, s.ID, s.Name)
+		}
+		if err == nil {
+			// Record what the service has, even after a refused setting.
+			var readDiags diag.Diagnostics
+			r.readSettings(ctx, s.ID, &plan, false, &readDiags)
+			if !resp.Diagnostics.HasError() {
+				resp.Diagnostics.Append(readDiags...)
+			}
+		}
+	}
+	plan.nullSettings()
 	if details != nil {
 		plan.fromAPI(details, configured)
 	} else {
@@ -409,6 +433,15 @@ func (r *serviceResource) Read(ctx context.Context, req resource.ReadRequest, re
 	state.fromAPI(d, r.params(ctx, &state, &resp.Diagnostics))
 	if state.DeletionProtection.IsNull() {
 		state.DeletionProtection = types.BoolValue(true) // import
+	}
+	imported, diags := req.Private.GetKey(ctx, privateImported)
+	resp.Diagnostics.Append(diags...)
+	r.readSettings(ctx, id, &state, len(imported) > 0, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if len(imported) > 0 {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateImported, nil)...)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -463,6 +496,20 @@ func (r *serviceResource) Update(ctx context.Context, req resource.UpdateRequest
 		}
 		mutated = true
 	}
+	if mutated {
+		// A parameter change or an upgrade restarts the service: let it
+		// settle before changing settings that may restart it again.
+		if _, err := r.waitRunning(ctx, id, name); err != nil {
+			addAPIError(&resp.Diagnostics, "Temps service "+formatID(id)+" did not become ready after update", err, servicePermissions)
+			return
+		}
+	}
+	if r.applySettings(ctx, id, &plan, &state, &resp.Diagnostics) {
+		mutated = true
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	var details *client.ServiceDetails
 	if mutated {
@@ -475,6 +522,10 @@ func (r *serviceResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 	plan.fromAPI(details, configured)
+	r.readSettings(ctx, id, &plan, false, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -530,4 +581,5 @@ func (r *serviceResource) ImportState(ctx context.Context, req resource.ImportSt
 		return
 	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateImported, []byte("true"))...)
 }
