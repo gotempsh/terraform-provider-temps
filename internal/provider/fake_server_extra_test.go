@@ -697,7 +697,11 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 			o.Projects = slices.DeleteFunc(o.Projects, func(m client.ProjectGroupMember) bool { return m.ID == pid })
 		}
 		p := f.projects[pid]
-		g.Projects = append(g.Projects, client.ProjectGroupMember{ID: pid, Name: p.Name, Slug: p.Slug})
+		m := client.ProjectGroupMember{ID: pid, Name: p.Name, Slug: p.Slug}
+		if !f.st.old {
+			m.InheritsRepository = ptr(false)
+		}
+		g.Projects = append(g.Projects, m)
 		writeJSON(w, 200, g)
 	})
 	h("DELETE /api/project-groups/{gid}/projects/{pid}", func(w http.ResponseWriter, r *http.Request) {

@@ -35,6 +35,10 @@ type fakeSettings struct {
 	rev       int // revision counter of flag environment rows
 	ruleSets  int // successful rule replacements
 	bumpRules bool
+
+	repoSets    int  // successful group repository writes
+	inheritSets int  // successful repository inheritance writes
+	syncFails   bool // following projects fail to take a new group repository
 }
 
 // touchFlagEnv gives a written flag environment row a new revision, as
@@ -377,5 +381,95 @@ func (f *fakeTemps) settingsRoutes(route func(string, func(http.ResponseWriter, 
 		}
 		st.certs[id] = map[string]any{"challenge_type": ct, "renewal_days": days, "alert_days": req["alert_days"], "alerts_enabled": req["alerts_enabled"]}
 		writeJSON(w, 200, certOf(id))
+	})
+	f.groupRepositoryRoutes(h)
+}
+
+// badConnection is a git connection ID the fake treats as deleted.
+const badConnection = 999
+
+func (f *fakeTemps) groupRepositoryRoutes(h func(string, func(http.ResponseWriter, *http.Request))) {
+	x, st := f.x, f.st
+	group := func(w http.ResponseWriter, r *http.Request) *client.ProjectGroup {
+		g, ok := x.groups[pathID(r, "gid")]
+		if !ok {
+			notFound(w, "project group", r.PathValue("gid"))
+			return nil
+		}
+		return g
+	}
+	h("PUT /api/project-groups/{gid}/repository", func(w http.ResponseWriter, r *http.Request) {
+		g := group(w, r)
+		if g == nil {
+			return
+		}
+		var req client.ProjectGroupRepository
+		_ = decode(r, &req)
+		for _, v := range []string{req.RepoOwner, req.RepoName, req.MainBranch} {
+			if v == "" || strings.ContainsAny(v, " \t") {
+				problem(w, 400, "Validation Error", "Repository owner, name and branch are required and cannot contain spaces")
+				return
+			}
+		}
+		switch {
+		case (req.GitProviderConnectionID == nil) == (req.PublicProvider == nil):
+			problem(w, 400, "Validation Error", "Set either git_provider_connection_id or public_provider")
+			return
+		case req.GitProviderConnectionID != nil && *req.GitProviderConnectionID == badConnection:
+			problem(w, 400, "Git Connection Unusable", fmt.Sprintf("Git connection %d cannot be used: it does not exist", badConnection))
+			return
+		case req.PublicProvider != nil && *req.PublicProvider != "github" && *req.PublicProvider != "gitlab":
+			problem(w, 400, "Validation Error", "Public repositories can be read from github, gitlab")
+			return
+		}
+		g.Repository = &req
+		st.repoSets++
+		services := []client.GroupMemberSync{}
+		for _, m := range g.Projects {
+			if m.InheritsRepository != nil && *m.InheritsRepository {
+				s := client.GroupMemberSync{ProjectID: m.ID, Name: m.Name}
+				if st.syncFails {
+					s.Error = ptr("branch " + req.MainBranch + " is not reachable")
+				}
+				services = append(services, s)
+			}
+		}
+		writeJSON(w, 200, map[string]any{"group": g, "services": services})
+	})
+	h("DELETE /api/project-groups/{gid}/repository", func(w http.ResponseWriter, r *http.Request) {
+		g := group(w, r)
+		if g == nil {
+			return
+		}
+		g.Repository = nil
+		for i := range g.Projects {
+			g.Projects[i].InheritsRepository = ptr(false)
+		}
+		writeJSON(w, 200, g)
+	})
+	h("PUT /api/project-groups/{gid}/projects/{pid}/repository-inheritance", func(w http.ResponseWriter, r *http.Request) {
+		g := group(w, r)
+		if g == nil {
+			return
+		}
+		m := g.Member(pathID(r, "pid"))
+		if m == nil {
+			problem(w, 404, "Resource Not Found", "Project "+r.PathValue("pid")+" is not in project group "+r.PathValue("gid"))
+			return
+		}
+		var req struct {
+			Inherit *bool `json:"inherit"`
+		}
+		if err := decode(r, &req); err != nil || req.Inherit == nil {
+			problem(w, 400, "Invalid Request", "inherit is required")
+			return
+		}
+		if *req.Inherit && g.Repository == nil {
+			problem(w, 409, "Repository Not Set", "Project group "+r.PathValue("gid")+" has no repository yet; set one first")
+			return
+		}
+		m.InheritsRepository = req.Inherit
+		st.inheritSets++
+		writeJSON(w, 200, g)
 	})
 }

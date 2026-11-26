@@ -3,18 +3,18 @@
 page_title: "temps_project_group Resource - temps"
 subcategory: ""
 description: |-
-  A group of projects that share environment variables (temps_project_group_variable). Add projects with temps_project_group_membership. Deleting a group keeps its projects.
+  A group of projects that share environment variables (temps_project_group_variable). Add projects with temps_project_group_membership. A group can also hold the repository its projects follow (monorepos). Deleting a group keeps its projects.
   Import with the group ID.
-  Required API key permissions: projects:read, projects:create, projects:write.
+  Required API key permissions: projects:read, projects:create, projects:write; repository also needs git_connections:read, git_repositories:read.
 ---
 
 # temps_project_group (Resource)
 
-A group of projects that share environment variables (`temps_project_group_variable`). Add projects with `temps_project_group_membership`. Deleting a group keeps its projects.
+A group of projects that share environment variables (`temps_project_group_variable`). Add projects with `temps_project_group_membership`. A group can also hold the repository its projects follow (monorepos). Deleting a group keeps its projects.
 
 Import with the group ID.
 
-Required API key permissions: `projects:read`, `projects:create`, `projects:write`.
+Required API key permissions: `projects:read`, `projects:create`, `projects:write`; `repository` also needs `git_connections:read`, `git_repositories:read`.
 
 ## Example Usage
 
@@ -23,6 +23,15 @@ resource "temps_project_group" "web" {
   name        = "Web apps"
   slug        = "web-apps"
   description = "Front ends that share settings"
+
+  # The monorepo the group's projects can follow (see inherit_repository on
+  # temps_project_group_membership).
+  repository = {
+    repo_owner                 = "example-org"
+    repo_name                  = "web"
+    main_branch                = "main"
+    git_provider_connection_id = 1
+  }
 }
 ```
 
@@ -36,11 +45,26 @@ resource "temps_project_group" "web" {
 ### Optional
 
 - `description` (String) What the group is for.
+- `repository` (Attributes) Repository the group's projects can follow, for monorepos (see `inherit_repository` on `temps_project_group_membership`). Setting or changing it rewrites the repository and branch of every member that follows it, keeping each member's directory; a member that cannot be updated keeps its previous settings and is reported as a warning. Left out, Terraform does not manage the repository; removing the argument removes the repository from the group, and its members keep their current git settings and stop following. Read back from `GET /project-groups/{id}` while set. Needs `projects:read`, `projects:write`, `git_connections:read`, `git_repositories:read` and write access to every project in the group. (see [below for nested schema](#nestedatt--repository))
 - `slug` (String) Unique identifier: lower-case letters, digits and `-`. Derived from the name when omitted; changes in place.
 
 ### Read-Only
 
 - `id` (String) Numeric group ID.
+
+<a id="nestedatt--repository"></a>
+### Nested Schema for `repository`
+
+Required:
+
+- `main_branch` (String) Branch the following projects deploy from; it must exist.
+- `repo_name` (String) Repository name.
+- `repo_owner` (String) Repository owner or organization.
+
+Optional:
+
+- `git_provider_connection_id` (Number) Git provider connection to read the repository through; the repository must be in its synced list. Set exactly one of this and `public_provider`.
+- `public_provider` (String) `github` or `gitlab`, to follow a public repository without a connection. Pushes to it cannot trigger deploys.
 
 ## Import
 
