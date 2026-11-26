@@ -20,12 +20,32 @@ import (
 
 var vaultPerms = []string{"settings:read", "settings:write"}
 
+// accessProjectField makes an access service or vault belong to a project.
+// Only creation has a project path: reads, updates and deletes use the
+// instance paths, which keep the owning project (the project read hides a
+// service filed in a vault the project is not linked to, and projects have
+// no delete). The ID stays the bare service or vault ID, so vaults and
+// bundles can refer to it; an import reads the project back.
+var accessProjectField = gfield{Name: "project_id", Kind: kInt, Clearable: true, CreateOnly: true, Path: true,
+	Desc: "Project that owns it, created through the project's endpoint; unset for one of the whole instance."}
+
+func accessCreatePath(collection string) func(gvals, string) string {
+	return func(v gvals, _ string) string {
+		if p, ok := v["project_id"].(types.Int64); ok && known(p) {
+			return "/projects/" + scalarString(p) + "/" + collection
+		}
+		return "/" + collection
+	}
+}
+
 var accessServiceSpec = &gspec{
 	Name: "access_service",
 	Desc: "A service sandboxed agents may call through the Temps access broker: the exact origin, paths and methods " +
-		"they may use, and the credential the broker injects so the agent never sees it.",
+		"they may use, and the credential the broker injects so the agent never sees it. With `project_id` it " +
+		"belongs to that project.",
 	Perms: vaultPerms,
 	Fields: []gfield{
+		accessProjectField,
 		{Name: "name", Kind: kString, Required: true, Desc: "Name of the service."},
 		{Name: "enabled", Kind: kBool, Required: true, Desc: "Let the broker grant access to it."},
 		{Name: "max_ttl_seconds", Kind: kInt, Required: true, Desc: "Longest an access session may last."},
@@ -37,7 +57,7 @@ var accessServiceSpec = &gspec{
 		{Name: "has_credential", Kind: kBool, Computed: true, Volatile: true, Desc: "Whether a credential is stored."},
 		{Name: "version", Kind: kInt, Computed: true, Volatile: true, Desc: "Revision, raised by every change."},
 	},
-	Create:          gop{Method: http.MethodPost, Path: "/access-services"},
+	Create:          gop{Method: http.MethodPost, PathFn: accessCreatePath("access-services")},
 	Read:            gop{Path: "/access-services/{id}"},
 	Update:          gop{Method: http.MethodPut, Path: "/access-services/{id}"},
 	ExpectedVersion: "expected_version",
@@ -45,15 +65,17 @@ var accessServiceSpec = &gspec{
 }
 
 var accessVaultSpec = &gspec{
-	Name:  "access_vault",
-	Desc:  "A named group of `temps_access_service`s that sandboxes are given access to together.",
+	Name: "access_vault",
+	Desc: "A named group of `temps_access_service`s that sandboxes are given access to together. With " +
+		"`project_id` it belongs to that project, and Temps links it to the project's sandboxes.",
 	Perms: vaultPerms,
 	Fields: []gfield{
+		accessProjectField,
 		{Name: "name", Kind: kString, Required: true, Desc: "Name of the vault."},
 		{Name: "service_ids", Kind: kStringSet, Required: true, Desc: "IDs of the access services in the vault."},
 		{Name: "version", Kind: kInt, Computed: true, Volatile: true, Desc: "Revision, raised by every change."},
 	},
-	Create:          gop{Method: http.MethodPost, Path: "/access-vaults", Envelope: "."},
+	Create:          gop{Method: http.MethodPost, PathFn: accessCreatePath("access-vaults"), Envelope: "."},
 	Read:            gop{Path: "/access-vaults/{id}", Envelope: "vault"},
 	Update:          gop{Method: http.MethodPut, Path: "/access-vaults/{id}", Envelope: "."},
 	ExpectedVersion: "expected_version",
