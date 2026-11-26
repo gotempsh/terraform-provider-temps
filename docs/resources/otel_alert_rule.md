@@ -58,7 +58,7 @@ resource "temps_otel_alert_rule" "checkout_latency" {
 
 ### Read-Only
 
-- `detection_kind` (String) Kind of the detector.
+- `detection_kind` (String) Kind of the detector, taken from `detection_config`.
 - `id` (String) Import ID, `<project_id>/<id>`.
 - `last_state` (String) `ok`, `firing` or `unknown`.
 

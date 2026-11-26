@@ -171,7 +171,8 @@ var otelAlertRuleSpec = &gspec{
 		{Name: "grouped_notification_threshold", Kind: kInt, Optional: true, Default: int64(defaultGroupedThreshold),
 			Desc: fmt.Sprintf("When more series than this start firing at once, only the first notification gets charts, "+
 				"1-1000. Defaults to `%d`.", defaultGroupedThreshold)},
-		{Name: "detection_kind", Kind: kString, Computed: true, Desc: "Kind of the detector."},
+		{Name: "detection_kind", Kind: kString, Computed: true, Volatile: true,
+			Desc: "Kind of the detector, taken from `detection_config`."},
 		{Name: "last_state", Kind: kString, Computed: true, Volatile: true, Desc: "`ok`, `firing` or `unknown`."},
 	},
 	Validate: validateOtelAlertRule,

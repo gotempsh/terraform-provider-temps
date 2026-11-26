@@ -536,3 +536,39 @@ resource "temps_otel_alert_rule" "r" {
 		return nil
 	})
 }
+
+// detection_kind follows detection_config: changing the detector updates it
+// in the same apply.
+func TestUnitOtelAlertRuleDetectorKind(t *testing.T) {
+	f := newMoreFake(t)
+	cfg := func(detector string) string {
+		return f.config(`
+resource "temps_otel_alert_rule" "r" {
+  project_id       = 8
+  name             = "Latency"
+  metric_name      = "http.server.duration"
+  aggregation      = "p95"
+  detection_config = jsonencode(%s)
+  window_secs      = 300
+  severity         = "warning"
+}`, detector)
+	}
+	const addr = "temps_otel_alert_rule.r"
+	runEngine(t, []resource.TestStep{
+		{
+			Config:           cfg(`{ kind = "static", comparator = "gt", threshold = 500 }`),
+			ConfigPlanChecks: emptyPlanAfterApply(),
+			Check:            resource.TestCheckResourceAttr(addr, "detection_kind", "static"),
+		},
+		{
+			Config:           cfg(`{ kind = "anomaly", sensitivity = 3 }`),
+			ConfigPlanChecks: expectAction(addr, plancheck.ResourceActionUpdate),
+			Check:            resource.TestCheckResourceAttr(addr, "detection_kind", "anomaly"),
+		},
+		// Nothing else changed: the kind is kept, not shown as unknown.
+		{
+			Config:           cfg(`{ kind = "anomaly", sensitivity = 3 }`),
+			ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()}},
+		},
+	}, nil)
+}
