@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -30,6 +31,21 @@ type fakeSettings struct {
 
 	certDomains map[int64]map[string]any // domain ID -> domain document
 	certs       map[int64]map[string]any // domain ID -> stored settings
+
+	rev       int // revision counter of flag environment rows
+	ruleSets  int // successful rule replacements
+	bumpRules bool
+}
+
+// touchFlagEnv gives a written flag environment row a new revision, as
+// Temps does with updated_at.
+func (st *fakeSettings) touchFlagEnv(e *client.FeatureFlagEnvironment) {
+	st.rev++
+	e.UpdatedAt = fmt.Sprintf("2026-01-01T00:00:%02d.000000Z", st.rev%60) + fmt.Sprint(st.rev)
+	if e.Rules == nil && !st.old {
+		e.Rules = &[]client.FlagRule{}
+		e.RulesValid = ptr(true)
+	}
 }
 
 func newFakeSettings() *fakeSettings {
@@ -215,6 +231,79 @@ func (f *fakeTemps) settingsRoutes(route func(string, func(http.ResponseWriter, 
 		prev := workloadOf(s)["mode"]
 		st.workload[s.s.ID] = req.Mode
 		writeJSON(w, 200, map[string]any{"previous_mode": prev, "workload": workloadOf(s)})
+	})
+
+	// --------------------------------------------------- flag targeting rules
+	h("PUT /api/projects/{pid}/flags/{key}/environments/{env}/rules", func(w http.ResponseWriter, r *http.Request) {
+		fl, ok := f.x.flags[fmt.Sprintf("%d/%s", pathID(r, "pid"), r.PathValue("key"))]
+		if !ok {
+			problem(w, 404, "Feature Flag Not Found", fmt.Sprintf("Feature flag '%s' not found in project %s", r.PathValue("key"), r.PathValue("pid")))
+			return
+		}
+		env := pathID(r, "env")
+		if !f.envOf(pathID(r, "pid"), env) {
+			problem(w, 404, "Environment Not Found", fmt.Sprintf("Environment %d not found in project %s", env, r.PathValue("pid")))
+			return
+		}
+		var req struct {
+			Rules    *[]client.FlagRule `json:"rules"`
+			Expected *string            `json:"expected_updated_at"`
+		}
+		if err := decode(r, &req); err != nil || req.Rules == nil {
+			problem(w, 422, "Unprocessable Entity", "missing field `rules`")
+			return
+		}
+		for i, rule := range *req.Rules {
+			if rule.Conditions == nil {
+				problem(w, 422, "Unprocessable Entity", fmt.Sprintf("rules[%d].conditions: invalid type: null, expected a sequence", i))
+				return
+			}
+			total := int64(0)
+			for _, s := range rule.Serve.Split {
+				total += s.Weight
+			}
+			if rule.Serve.Kind == "split" && total != 100 {
+				problem(w, 400, "Invalid Flag Rules", fmt.Sprintf("rule %d: split weights add up to %d, not 100", i, total))
+				return
+			}
+		}
+		idx := -1
+		for i, e := range fl.Environments {
+			if e.EnvironmentID == env {
+				idx = i
+			}
+		}
+		if st.bumpRules && idx >= 0 { // someone else saved the row meanwhile
+			st.bumpRules = false
+			st.touchFlagEnv(&fl.Environments[idx])
+		}
+		switch {
+		case idx >= 0 && (req.Expected == nil || *req.Expected != fl.Environments[idx].UpdatedAt):
+			problem(w, 409, "Stale Write", fmt.Sprintf("The rules of flag '%s' in environment %d changed since they were read", fl.Key, env))
+			return
+		case idx < 0 && req.Expected != nil:
+			problem(w, 409, "Stale Write", fmt.Sprintf("The rules of flag '%s' in environment %d changed since they were read", fl.Key, env))
+			return
+		case idx < 0:
+			fl.Environments = append(fl.Environments, client.FeatureFlagEnvironment{EnvironmentID: env, Enabled: true, Value: []byte("null")})
+			idx = len(fl.Environments) - 1
+		}
+		e := &fl.Environments[idx]
+		// Temps stores what it decoded: optional fields left out stay out,
+		// numbers come back as floats.
+		b, _ := json.Marshal(*req.Rules)
+		var stored []client.FlagRule
+		_ = json.Unmarshal(b, &stored)
+		for i := range stored {
+			for j := range stored[i].Conditions {
+				stored[i].Conditions[j].Value = reencode(stored[i].Conditions[j].Value)
+			}
+			stored[i].Serve.Value = reencode(stored[i].Serve.Value)
+		}
+		e.Rules = &stored
+		st.touchFlagEnv(e)
+		st.ruleSets++
+		writeJSON(w, 200, e)
 	})
 
 	// ------------------------------------------- TLS domains and their settings

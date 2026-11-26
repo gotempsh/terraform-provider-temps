@@ -28,6 +28,44 @@ type FeatureFlagEnvironment struct {
 	EnvironmentID int64           `json:"environment_id"`
 	Enabled       bool            `json:"enabled"`
 	Value         json.RawMessage `json:"value"`
+	// Rules are the ordered targeting rules; nil when the server predates them.
+	Rules *[]FlagRule `json:"rules,omitempty"`
+	// RulesValid is false when the stored rules could not be decoded.
+	RulesValid *bool `json:"rules_valid,omitempty"`
+	// UpdatedAt is the row's revision, sent back to replace the rules.
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// FlagRule is one targeting rule: when every condition holds (and the
+// subject is within the rollout), serve something.
+type FlagRule struct {
+	Description       *string             `json:"description,omitempty"`
+	Conditions        []FlagRuleCondition `json:"conditions"`
+	RolloutPercentage *float64            `json:"rollout_percentage,omitempty"`
+	Serve             FlagRuleServe       `json:"serve"`
+}
+
+// FlagRuleCondition is `attribute operator value`. Value is a JSON scalar,
+// a JSON list for in/not_in, and absent for exists/not_exists.
+type FlagRuleCondition struct {
+	Attribute string          `json:"attribute"`
+	Operator  string          `json:"operator"`
+	Value     json.RawMessage `json:"value,omitempty"`
+}
+
+// FlagRuleServe is what a matching rule serves: a literal value (kind
+// "value"), a declared variant ("variant") or a weighted split ("split").
+type FlagRuleServe struct {
+	Kind    string              `json:"kind"`
+	Value   json.RawMessage     `json:"value,omitempty"`
+	Variant string              `json:"variant,omitempty"`
+	Split   []FlagVariantWeight `json:"split,omitempty"`
+}
+
+// FlagVariantWeight is one arm of a split, in whole percent.
+type FlagVariantWeight struct {
+	Variant string `json:"variant"`
+	Weight  int64  `json:"weight"`
 }
 
 // HasValue reports whether the environment overrides the flag default.
@@ -102,4 +140,19 @@ func (c *Client) SetFeatureFlagEnvironment(ctx context.Context, projectID int64,
 	}
 	var e FeatureFlagEnvironment
 	return &e, c.do(ctx, http.MethodPut, flagPath(projectID, key)+idPath("/environments/%d", envID), nil, req, &e)
+}
+
+// SetFeatureFlagRules replaces a flag's targeting rules in one environment.
+// expectedUpdatedAt is the environment row's updated_at as last read, or ""
+// when the flag had no row for it: a 409 means it changed in between.
+func (c *Client) SetFeatureFlagRules(ctx context.Context, projectID int64, key string, envID int64, rules []FlagRule, expectedUpdatedAt string) (*FeatureFlagEnvironment, error) {
+	if rules == nil {
+		rules = []FlagRule{}
+	}
+	body := map[string]any{"rules": rules}
+	if expectedUpdatedAt != "" {
+		body["expected_updated_at"] = expectedUpdatedAt
+	}
+	var e FeatureFlagEnvironment
+	return &e, c.do(ctx, http.MethodPut, flagPath(projectID, key)+idPath("/environments/%d/rules", envID), nil, body, &e)
 }

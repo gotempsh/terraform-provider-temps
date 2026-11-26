@@ -314,6 +314,7 @@ func (f *fakeTemps) extraRoutes(h func(string, func(http.ResponseWriter, *http.R
 		if v, ok := raw["value"]; ok {
 			e.Value = reencode(v)
 		}
+		f.st.touchFlagEnv(e)
 		writeJSON(w, 200, e)
 	})
 
