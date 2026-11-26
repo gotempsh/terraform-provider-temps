@@ -258,6 +258,9 @@ var genericSpecs = []*gspec{
 	serviceAlertRuleSpec,
 	otelAlertRuleSpec,
 	otelDashboardSpec,
+	analyticsGoalSpec,
+	analyticsTrafficFilterSpec,
+	projectAnalyticsSettingsSpec,
 }
 
 func (p *tempsProvider) DataSources(_ context.Context) []func() datasource.DataSource {

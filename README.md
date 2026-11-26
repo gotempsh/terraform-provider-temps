@@ -27,7 +27,7 @@ reference documentation for every resource and data source is in [`docs/`](docs)
 | Identity and access | `temps_user`, `temps_user_role`, `temps_oidc_provider`, `temps_oidc_role_mapping`, `temps_api_key`, `temps_deployment_token`, `temps_git_provider`, `temps_global_secret`, `temps_access_service`, `temps_access_vault`, `temps_access_bundle`, `temps_access_vault_link` |
 | AI | `temps_ai_provider`, `temps_ai_provider_model`, `temps_ai_instance_limits`, `temps_ai_project_limits`, `temps_project_agent`, `temps_mcp_server`, `temps_skill`, `temps_project_mcp_server`, `temps_project_skill`, `temps_project_autofix_settings`, `temps_ai_model_catalog_settings`, `temps_ai_coding_agent_settings` |
 | Instance and cluster | `temps_settings`, `temps_feature_flag`, `temps_feature_flag_environment`, `temps_cluster_network`, `temps_wireguard_mesh`, `temps_node_build_limits`, `temps_node_resources`, `temps_sandbox_placement`, `temps_preview_gateway_settings`, `temps_telemetry_settings` |
-| Product analytics | `temps_funnel`, `temps_survey` |
+| Product analytics | `temps_funnel`, `temps_survey`, `temps_analytics_goal`, `temps_analytics_traffic_filter`, `temps_project_analytics_settings` |
 
 Data sources: `temps_environment`, `temps_project`, `temps_project_group`, `temps_service`, `temps_service_connection`, `temps_service_types`, `temps_webhook_event_types`.
 
