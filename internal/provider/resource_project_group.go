@@ -31,7 +31,6 @@ var (
 var (
 	_ resource.Resource                = &projectGroupResource{}
 	_ resource.ResourceWithImportState = &projectGroupResource{}
-	_ resource.ResourceWithModifyPlan  = &projectGroupResource{}
 	_ resource.Resource                = &projectGroupMembershipResource{}
 	_ resource.ResourceWithImportState = &projectGroupMembershipResource{}
 	_ resource.Resource                = &projectGroupVariableResource{}
@@ -79,9 +78,10 @@ func (r *projectGroupResource) Schema(_ context.Context, _ resource.SchemaReques
 	}
 }
 
-// fromAPI copies the group. The repository is read only while managed (or
-// right after an import, when the group has one).
-func (m *projectGroupModel) fromAPI(g *client.ProjectGroup, imported bool) {
+// fromAPI copies the group. The repository is read only while managed: an
+// import leaves it out, so state holds a repository only once the
+// configuration has set it, and removing the argument then removes it.
+func (m *projectGroupModel) fromAPI(g *client.ProjectGroup) {
 	m.ID = types.StringValue(formatID(g.ID))
 	m.Name = types.StringValue(g.Name)
 	m.Slug = types.StringValue(g.Slug)
@@ -90,7 +90,7 @@ func (m *projectGroupModel) fromAPI(g *client.ProjectGroup, imported bool) {
 	} else {
 		m.Description = types.StringValue(*g.Description)
 	}
-	if m.Repository != nil || imported {
+	if m.Repository != nil {
 		m.Repository = groupRepositoryFromAPI(g.Repository)
 	}
 }
@@ -107,16 +107,15 @@ func (r *projectGroupResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 	if plan.Repository != nil {
-		if updated := r.writeGroupRepository(ctx, g.ID, plan.Repository, nil, false, &resp.Diagnostics); updated != nil {
+		if updated := r.writeGroupRepository(ctx, g.ID, plan.Repository, nil, &resp.Diagnostics); updated != nil {
 			g = updated
-			resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateRepositoryManaged, []byte("true"))...)
 		} else {
 			// The group exists without its repository: keep it in state so
 			// it is not orphaned (Terraform marks it tainted).
 			plan.Repository = nil
 		}
 	}
-	plan.fromAPI(g, false)
+	plan.fromAPI(g)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -140,12 +139,7 @@ func (r *projectGroupResource) Read(ctx context.Context, req resource.ReadReques
 		addAPIError(&resp.Diagnostics, "Unable to read project group "+formatID(id), err, projectGroupPermissions)
 		return
 	}
-	imported, diags := req.Private.GetKey(ctx, privateImported)
-	resp.Diagnostics.Append(diags...)
-	state.fromAPI(g, len(imported) > 0)
-	if len(imported) > 0 {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateImported, nil)...)
-	}
+	state.fromAPI(g)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -168,43 +162,21 @@ func (r *projectGroupResource) Update(ctx context.Context, req resource.UpdateRe
 		addAPIError(&resp.Diagnostics, "Unable to update project group "+formatID(id), err, projectGroupPermissions)
 		return
 	}
-	managed, diags := req.Private.GetKey(ctx, privateRepositoryManaged)
-	resp.Diagnostics.Append(diags...)
-	if updated := r.writeGroupRepository(ctx, id, plan.Repository, state.Repository, len(managed) > 0, &resp.Diagnostics); updated != nil {
+	prior := state.Repository
+	if plan.Repository != nil && prior == nil {
+		// Configured for the first time (for example after an import):
+		// compare with what Temps has, so a matching repository is not
+		// rewritten onto every follower.
+		prior = groupRepositoryFromAPI(g.Repository)
+	}
+	if updated := r.writeGroupRepository(ctx, id, plan.Repository, prior, &resp.Diagnostics); updated != nil {
 		g = updated
 	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if plan.Repository != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateRepositoryManaged, []byte("true"))...)
-	} else {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateRepositoryManaged, nil)...)
-	}
-	plan.fromAPI(g, false)
+	plan.fromAPI(g)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-}
-
-// ModifyPlan explains a plan that drops an imported repository the
-// configuration never set: Terraform stops tracking it, Temps keeps it.
-func (r *projectGroupResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
-		return
-	}
-	var plan, state projectGroupModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() || plan.Repository != nil || state.Repository == nil {
-		return
-	}
-	managed, diags := req.Private.GetKey(ctx, privateRepositoryManaged)
-	resp.Diagnostics.Append(diags...)
-	if len(managed) == 0 {
-		resp.Diagnostics.AddWarning("The group's repository stays in Temps",
-			fmt.Sprintf("Project group %s was imported with repository %s/%s, which the configuration does not set. Terraform stops "+
-				"tracking it and leaves it, and the projects following it, unchanged. Add the repository argument to manage it.",
-				state.ID.ValueString(), state.Repository.RepoOwner.ValueString(), state.Repository.RepoName.ValueString()))
-	}
 }
 
 func (r *projectGroupResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -229,7 +201,6 @@ func (r *projectGroupResource) ImportState(ctx context.Context, req resource.Imp
 		return
 	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
-	resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateImported, []byte("true"))...)
 }
 
 // ------------------------------------------------------------ temps_project_group_membership

@@ -80,8 +80,9 @@ func groupRepositoryAttribute() schema.Attribute {
 			"`temps_project_group_membership`). Setting or changing it rewrites the repository and branch of every member " +
 			"that follows it, keeping each member's directory; a member that cannot be updated keeps its previous settings " +
 			"and is reported as a warning. Left out, Terraform does not manage the repository; removing the argument removes " +
-			"the repository from the group, and its members keep their current git settings and stop following. A repository " +
-			"that came with an import and was never configured is left in place. Read back " +
+			"the repository from the group, and its members keep their current git settings and stop following. An import " +
+			"does not read the repository: add the argument afterwards to manage it (if it matches Temps, nothing is " +
+			"rewritten). Read back " +
 			"from `GET /project-groups/{id}` while set. Needs " + permList(groupRepositoryPermissions) + " and write access " +
 			"to every project in the group.",
 		Attributes: map[string]schema.Attribute{
@@ -101,20 +102,13 @@ func groupRepositoryAttribute() schema.Attribute {
 	}
 }
 
-// privateRepositoryManaged marks a group whose repository the configuration
-// set. An imported repository the configuration never set is only dropped
-// from state, never removed from Temps.
-const privateRepositoryManaged = "repository_managed"
-
 // writeGroupRepository brings the group's repository from prior to plan:
 // PUT when it is configured and differs, DELETE when it was managed and is
 // no longer configured. It returns the updated group, or nil if nothing was
 // written.
-func (r *projectGroupResource) writeGroupRepository(ctx context.Context, id int64, plan, prior *groupRepositoryModel, managed bool, diags *diag.Diagnostics) *client.ProjectGroup {
+func (r *projectGroupResource) writeGroupRepository(ctx context.Context, id int64, plan, prior *groupRepositoryModel, diags *diag.Diagnostics) *client.ProjectGroup {
 	switch {
 	case plan.equal(prior):
-		return nil
-	case plan == nil && !managed:
 		return nil
 	case plan == nil:
 		g, err := r.client.ClearProjectGroupRepository(ctx, id)

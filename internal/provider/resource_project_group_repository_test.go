@@ -95,7 +95,8 @@ func TestUnitProjectGroupRepository(t *testing.T) {
 				}),
 			),
 		},
-		{ResourceName: groupAddr, ImportState: true, ImportStateVerify: true},
+		// An import does not read the repository (see the import tests).
+		{ResourceName: groupAddr, ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"repository"}},
 		{ResourceName: memberAddr, ImportState: true, ImportStateVerify: true},
 		{
 			Config:           groupRepoConfig(h, publicRepo, "inherit_repository = true"),
@@ -179,10 +180,10 @@ func TestUnitProjectGroupRepository(t *testing.T) {
 			Check:            resource.TestCheckNoResourceAttr(groupAddr, "repository.repo_owner"),
 		},
 		{
-			// Importing picks it up.
+			// Nor does importing pick it up.
 			ResourceName: groupAddr, ImportState: true, ImportStateCheck: func(s []*terraform.InstanceState) error {
-				if got := s[0].Attributes["repository.repo_name"]; got != "other" {
-					return fmt.Errorf("imported repository.repo_name = %q", got)
+				if got, ok := s[0].Attributes["repository.repo_name"]; ok {
+					return fmt.Errorf("imported repository.repo_name = %q, want it left out", got)
 				}
 				return nil
 			},
@@ -293,18 +294,16 @@ func TestUnitProjectGroupInheritOldServer(t *testing.T) {
 	}}, nil)
 }
 
-// An imported group's repository that the configuration does not set is
-// left in Temps, with its followers; it is removed only once the
-// configuration has set it and then drops it.
-func TestUnitProjectGroupRepositoryImportedNotConfigured(t *testing.T) {
-	h := unitHarness(t)
+// importedGroup seeds a group that has a repository and a follower, and
+// returns a configuration importing it with repo (empty to leave it out).
+func importedGroup(h *harness) func(repo string) string {
 	const gid, follower = 9001, 42
 	h.fake.with(func() {
 		h.fake.x.groups[gid] = &client.ProjectGroup{ID: gid, Name: "Web apps", Slug: h.name("web"),
 			Repository: &client.ProjectGroupRepository{RepoOwner: "example-org", RepoName: "shop", MainBranch: "main", GitProviderConnectionID: ptr(int64(7))},
 			Projects:   []client.ProjectGroupMember{{ID: follower, Name: "Shop", Slug: "shop", InheritsRepository: ptr(true)}}}
 	})
-	group := func(repo string) string {
+	return func(repo string) string {
 		return h.config(`
 import {
   to = temps_project_group.web
@@ -317,12 +316,36 @@ resource "temps_project_group" "web" {
   %s
 }`, gid, h.name("web"), repo)
 	}
+}
+
+func (h *harness) noRepoWrites() resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		if repo, _ := h.groupWrites(); repo != 0 {
+			return fmt.Errorf("%d group repository writes, want none", repo)
+		}
+		return nil
+	}
+}
+
+func repositoryRemoved(g *client.ProjectGroup) error {
+	if g.Repository != nil {
+		return fmt.Errorf("group still has repository %+v", g.Repository)
+	}
+	return wantFollowing(false)(g)
+}
+
+// An imported group's repository that the configuration does not set is
+// left in Temps, with its followers.
+func TestUnitProjectGroupRepositoryImportedNotConfigured(t *testing.T) {
+	h := unitHarness(t)
+	group := importedGroup(h)
 	h.run([]resource.TestStep{
 		{
 			Config:           group(""),
 			ConfigPlanChecks: emptyPlanAfterApply(),
 			Check: resource.ComposeAggregateTestCheckFunc(
 				resource.TestCheckNoResourceAttr(groupAddr, "repository.repo_owner"),
+				h.noRepoWrites(),
 				h.groupState(func(g *client.ProjectGroup) error {
 					if g.Repository == nil || g.Repository.RepoName != "shop" {
 						return fmt.Errorf("imported group lost its repository: %+v", g.Repository)
@@ -332,20 +355,42 @@ resource "temps_project_group" "web" {
 			),
 		},
 		{
+			// Configuring the repository Temps already has rewrites nothing.
 			Config:           group(connectedRepo),
 			ConfigPlanChecks: expectAction(groupAddr, plancheck.ResourceActionUpdate),
-			Check:            resource.TestCheckResourceAttr(groupAddr, "repository.repo_name", "shop"),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckResourceAttr(groupAddr, "repository.repo_name", "shop"),
+				h.noRepoWrites(),
+			),
 		},
 		{
 			// Now managed: dropping it removes it.
 			Config:           group(""),
 			ConfigPlanChecks: expectAction(groupAddr, plancheck.ResourceActionUpdate),
-			Check: h.groupState(func(g *client.ProjectGroup) error {
-				if g.Repository != nil {
-					return fmt.Errorf("group still has repository %+v", g.Repository)
-				}
-				return wantFollowing(false)(g)
-			}),
+			Check:            h.groupState(repositoryRemoved),
+		},
+	}, nil)
+}
+
+// A group imported with its repository already in the configuration is
+// managed from the import on: removing the argument later removes it.
+func TestUnitProjectGroupRepositoryImportedConfigured(t *testing.T) {
+	h := unitHarness(t)
+	group := importedGroup(h)
+	h.run([]resource.TestStep{
+		{
+			Config:           group(connectedRepo),
+			ConfigPlanChecks: emptyPlanAfterApply(),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckResourceAttr(groupAddr, "repository.repo_name", "shop"),
+				h.noRepoWrites(),
+				h.groupState(wantFollowing(true)),
+			),
+		},
+		{
+			Config:           group(""),
+			ConfigPlanChecks: expectAction(groupAddr, plancheck.ResourceActionUpdate),
+			Check:            h.groupState(repositoryRemoved),
 		},
 	}, nil)
 }
