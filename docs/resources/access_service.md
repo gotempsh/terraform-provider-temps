@@ -59,7 +59,7 @@ resource "temps_access_service" "web_search" {
 
 - `credential` (String, Sensitive) Credential the broker injects. Temps never returns it, so changes made outside Terraform are not detected.
 - `project_id` (Number) Project that owns it, created through the project's endpoint; unset for one of the whole instance.
-- `vault_id` (String) ID of a `temps_access_vault` to file the service in. Temps never returns it, so changes made outside Terraform are not detected.
+- `vault_id` (String) ID of a `temps_access_vault` to file the service in. Only used when the resource is created; changing it later has no effect.
 
 ### Read-Only
 

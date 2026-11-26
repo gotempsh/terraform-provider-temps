@@ -53,7 +53,8 @@ var accessServiceSpec = &gspec{
 			Desc: "Destination and request scope, for example " +
 				"`jsonencode({ origin = \"https://api.example.com\", methods = [\"GET\"], path_prefixes = [\"/v1\"] })`."},
 		{Name: "credential", Kind: kString, Optional: true, Sensitive: true, Read: "-", Desc: "Credential the broker injects."},
-		{Name: "vault_id", Kind: kString, Optional: true, Read: "-", Desc: "ID of a `temps_access_vault` to file the service in."},
+		{Name: "vault_id", Kind: kString, Optional: true, Read: "-", Initial: true,
+			Desc: "ID of a `temps_access_vault` to file the service in."},
 		{Name: "has_credential", Kind: kBool, Computed: true, Volatile: true, Desc: "Whether a credential is stored."},
 		{Name: "version", Kind: kInt, Computed: true, Volatile: true, Desc: "Revision, raised by every change."},
 	},

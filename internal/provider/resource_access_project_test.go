@@ -24,6 +24,7 @@ resource "temps_access_service" "api" {
   max_ttl_seconds = 3600
   policy          = jsonencode({ origin = "https://api.example.com", methods = ["GET"] })
   credential      = "tok"
+  vault_id        = "vault_seed"
 }`, project, name)
 	}
 	const addr = "temps_access_service.api"
@@ -45,6 +46,7 @@ resource "temps_access_service" "api" {
 			),
 		},
 		{
+			// vault_id is only accepted on create: an update must not send it.
 			Config:           cfg("project_id = 8", "API v2"),
 			ConfigPlanChecks: expectAction(addr, plancheck.ResourceActionUpdate),
 			Check: func(*terraform.State) error {
@@ -57,7 +59,7 @@ resource "temps_access_service" "api" {
 				return nil
 			},
 		},
-		{ResourceName: addr, ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"credential"}},
+		{ResourceName: addr, ImportState: true, ImportStateVerify: true, ImportStateVerifyIgnore: []string{"credential", "vault_id"}},
 		{
 			// The ID is the bare service ID, which vaults refer to: the
 			// project is read back.
