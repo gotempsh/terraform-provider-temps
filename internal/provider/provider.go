@@ -156,6 +156,7 @@ func (p *tempsProvider) Resources(_ context.Context) []func() resource.Resource 
 		newIPAccessPolicyResource,
 		newCronMonitorResource,
 		newDeploymentTokenResource,
+		newDeploymentResource,
 		newTeamResource,
 		newProjectAccessResource,
 		newProjectGroupResource,
