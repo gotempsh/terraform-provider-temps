@@ -3,14 +3,14 @@
 page_title: "temps_funnel Resource - temps"
 subcategory: ""
 description: |-
-  A conversion funnel of a project's analytics: the share of visitors who go through steps in order. Temps does not return a funnel's steps, so steps changed elsewhere are not detected.
+  A conversion funnel of a project's analytics: the share of visitors who go through steps in order. Released Temps servers do not return a funnel's steps, so the provider does not read them: steps changed elsewhere are not detected.
   Import with <project_id>/<id>.
   Required API key permissions: analytics:read, analytics:write.
 ---
 
 # temps_funnel (Resource)
 
-A conversion funnel of a project's analytics: the share of visitors who go through `steps` in order. Temps does not return a funnel's steps, so steps changed elsewhere are not detected.
+A conversion funnel of a project's analytics: the share of visitors who go through `steps` in order. Released Temps servers do not return a funnel's steps, so the provider does not read them: steps changed elsewhere are not detected.
 
 Import with `<project_id>/<id>`.
 

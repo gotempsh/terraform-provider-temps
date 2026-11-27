@@ -366,6 +366,48 @@ func TestUnitBackupSchedule(t *testing.T) {
 	h.run(scheduleSteps(h), h.scheduleDestroyed())
 }
 
+// Released servers send next_run and last_run as epoch milliseconds.
+func TestUnitBackupScheduleLegacyTimes(t *testing.T) {
+	h := unitHarness(t)
+	h.fake.legacyShapes = true
+	h.run(scheduleSteps(h), h.scheduleDestroyed())
+}
+
+// Moving from a released server to a newer one changes how times are sent,
+// not what the provider reads or plans.
+func TestUnitBackupScheduleAcrossServerVersions(t *testing.T) {
+	h := unitHarness(t)
+	var before string
+	runAs := func(legacy bool) func() { return func() { h.fake.with(func() { h.fake.legacyShapes = legacy }) } }
+	readNextRun := func(record bool) resource.TestCheckFunc {
+		return func(s *terraform.State) error {
+			id, err := stateInt64(s, scheduleAddr, "id")
+			if err != nil {
+				return err
+			}
+			got, err := h.client.GetBackupSchedule(context.Background(), id)
+			if err != nil {
+				return err
+			}
+			if got.NextRun == nil || string(*got.NextRun) != fakeNextRun {
+				return fmt.Errorf("next_run = %v, want %s", got.NextRun, fakeNextRun)
+			}
+			if record {
+				before = string(*got.NextRun)
+			} else if string(*got.NextRun) != before {
+				return fmt.Errorf("next_run read %q, then %q after the upgrade", before, *got.NextRun)
+			}
+			return nil
+		}
+	}
+	cfg := scheduleConfig(h, "0 0 3 * * *", 7, true, "a")
+	h.run([]resource.TestStep{
+		{PreConfig: runAs(true), Config: cfg, ConfigPlanChecks: emptyPlanAfterApply(), Check: readNextRun(true)},
+		{PreConfig: runAs(false), Config: cfg, PlanOnly: true},
+		{Config: cfg, ConfigPlanChecks: emptyPlanAfterApply(), Check: readNextRun(false)},
+	}, h.scheduleDestroyed())
+}
+
 func TestAccBackupSchedule(t *testing.T) {
 	h := accHarness(t)
 	h.run(scheduleSteps(h), h.scheduleDestroyed())

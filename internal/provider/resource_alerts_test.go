@@ -109,6 +109,42 @@ func TestUnitProjectSecret(t *testing.T) {
 	h.run(secretSteps(h), h.secretsDestroyed())
 }
 
+// Released servers send the secret list as one bare array.
+func TestUnitProjectSecretLegacyList(t *testing.T) {
+	h := unitHarness(t)
+	h.fake.legacyShapes = true
+	h.run(secretSteps(h), h.secretsDestroyed())
+}
+
+// A secret pushed onto a later page by newer ones is still found: the plan
+// stays empty instead of creating it again.
+func TestUnitProjectSecretOnALaterPage(t *testing.T) {
+	h := unitHarness(t)
+	prod := "[data.temps_environment.production.id]"
+	h.run([]resource.TestStep{
+		{
+			Config:           secretConfig(h, "one", prod),
+			ConfigPlanChecks: emptyPlanAfterApply(),
+			Check: func(s *terraform.State) error {
+				pid, err := stateInt64(s, secretAddr, "project_id")
+				if err != nil {
+					return err
+				}
+				// 250 newer secrets: pages of 100 put this one on page 3.
+				h.fake.with(func() {
+					for i := range 250 {
+						id := h.fake.nextID()
+						h.fake.al.secrets[id] = &fakeSecret{s: client.ProjectSecret{ID: id, ProjectID: pid, Key: fmt.Sprintf("NEWER_%d", i)}}
+					}
+				})
+				return nil
+			},
+		},
+		// Were it missed, the refresh would drop it and the plan create it.
+		{Config: secretConfig(h, "one", prod), PlanOnly: true},
+	}, h.secretsDestroyed())
+}
+
 func TestAccProjectSecret(t *testing.T) {
 	h := accHarness(t)
 	h.run(secretSteps(h), h.secretsDestroyed())

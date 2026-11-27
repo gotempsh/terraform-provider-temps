@@ -44,6 +44,11 @@ type fakeTemps struct {
 	domains      map[int64]*fakeDomain
 	failures     map[string]fakeFailure // "METHOD /path" -> injected error
 	noPagePasswd bool                   // simulate a server without the password endpoint
+	// legacyShapes serves the response shapes of releases up to
+	// v0.1.0-beta.63: bare arrays instead of pages, and epoch milliseconds
+	// instead of RFC 3339 times. By default the fake answers like Temps
+	// from 2026-11-25 on.
+	legacyShapes bool
 	requests     []string
 
 	x   *fakeExtra  // resources added after the first release
@@ -843,9 +848,10 @@ func (f *fakeTemps) routes() http.Handler {
 		s := &fakeSchedule{s: client.BackupSchedule{ID: f.nextID(), Name: req.Name, Description: req.Description, BackupType: req.BackupType,
 			RetentionPeriod: req.RetentionPeriod, S3SourceID: src, ScheduleExpression: req.ScheduleExpression, Enabled: req.Enabled,
 			Tags: req.Tags, TargetAllServices: req.TargetAllServices != nil && *req.TargetAllServices,
-			IncludeControlPlane: req.IncludeControlPlane != nil && *req.IncludeControlPlane, MaxRuntimeSecs: req.MaxRuntimeSecs}, serviceIDs: req.ServiceIDs}
+			IncludeControlPlane: req.IncludeControlPlane != nil && *req.IncludeControlPlane, MaxRuntimeSecs: req.MaxRuntimeSecs,
+			NextRun: ptr(client.Timestamp(fakeNextRun))}, serviceIDs: req.ServiceIDs}
 		f.schedules[s.s.ID] = s
-		writeJSON(w, 201, s.s)
+		writeJSON(w, 201, f.scheduleJSON(s.s))
 	})
 	schedLookup := func(w http.ResponseWriter, r *http.Request) *fakeSchedule {
 		s, ok := f.schedules[pathID(r, "id")]
@@ -856,7 +862,7 @@ func (f *fakeTemps) routes() http.Handler {
 	}
 	h("GET /api/backups/schedules/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if s := schedLookup(w, r); s != nil {
-			writeJSON(w, 200, s.s)
+			writeJSON(w, 200, f.scheduleJSON(s.s))
 		}
 	})
 	h("PATCH /api/backups/schedules/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -894,7 +900,7 @@ func (f *fakeTemps) routes() http.Handler {
 			s.s.IncludeControlPlane = *req.IncludeControlPlane
 		}
 		s.s.MaxRuntimeSecs = req.MaxRuntimeSecs
-		writeJSON(w, 200, s.s)
+		writeJSON(w, 200, f.scheduleJSON(s.s))
 	})
 	h("GET /api/backups/schedules/{id}/services", func(w http.ResponseWriter, r *http.Request) {
 		s := schedLookup(w, r)

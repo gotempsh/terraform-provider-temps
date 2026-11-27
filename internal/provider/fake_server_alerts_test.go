@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -49,7 +50,7 @@ func (f *fakeTemps) alertRoutes(h func(string, func(http.ResponseWriter, *http.R
 	}
 
 	// --------------------------------------------------------------- secrets
-	// Like Temps: no single GET, an empty scope means every environment, and a
+	// Like Temps: an empty scope means every environment, and a
 	// PUT treats omitted scope fields as empty, widening the secret.
 	setScope := func(w http.ResponseWriter, pid int64, s *client.ProjectSecret, req client.ProjectSecretRequest) bool {
 		s.Environments = s.Environments[:0]
@@ -83,6 +84,7 @@ func (f *fakeTemps) alertRoutes(h func(string, func(http.ResponseWriter, *http.R
 		}
 		return false
 	}
+	// Newest first, paged unless the fake answers like a released server.
 	h("GET /api/projects/{pid}/secrets", func(w http.ResponseWriter, r *http.Request) {
 		pid := pathID(r, "pid")
 		out := []client.ProjectSecret{}
@@ -91,7 +93,8 @@ func (f *fakeTemps) alertRoutes(h func(string, func(http.ResponseWriter, *http.R
 				out = append(out, s.s)
 			}
 		}
-		writeJSON(w, 200, out)
+		slices.SortFunc(out, func(x, y client.ProjectSecret) int { return cmp.Compare(y.ID, x.ID) })
+		writePage(w, r, out, f.legacyShapes)
 	})
 	h("POST /api/projects/{pid}/secrets", func(w http.ResponseWriter, r *http.Request) {
 		pid, ok := project(w, r)
