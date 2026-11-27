@@ -69,7 +69,8 @@ var statusPageWebhookSpec = &gspec{
 var funnelSpec = &gspec{
 	Name: "funnel",
 	Desc: "A conversion funnel of a project's analytics: the share of visitors who go through `steps` in order. " +
-		"Temps does not return a funnel's steps, so steps changed elsewhere are not detected.",
+		"Released Temps servers do not return a funnel's steps, so the provider does not read them: steps changed " +
+		"elsewhere are not detected.",
 	Perms:   []string{"analytics:read", "analytics:write"},
 	Parents: []string{"project_id"},
 	Fields: []gfield{
@@ -84,6 +85,9 @@ var funnelSpec = &gspec{
 	CreateResult:   renameKey("funnel_id", "id"),
 	Read:           gop{Path: "/projects/{project_id}/funnels"},
 	List:           true,
+	ListKey:        "items",
+	Paged:          true,
+	LegacyArray:    true,
 	Update:         gop{Method: http.MethodPut, Path: "/projects/{project_id}/funnels/{id}"},
 	Delete:         gop{Method: http.MethodDelete, Path: "/projects/{project_id}/funnels/{id}"},
 	ReadAfterWrite: true,

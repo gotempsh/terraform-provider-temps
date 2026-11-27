@@ -123,8 +123,10 @@ type BackupSchedule struct {
 	TargetAllServices   bool     `json:"target_all_services"`
 	IncludeControlPlane bool     `json:"include_control_plane"`
 	MaxRuntimeSecs      *int64   `json:"max_runtime_secs"`
-	NextRun             *int64   `json:"next_run"`
-	LastRun             *int64   `json:"last_run"`
+	// NextRun and LastRun are null until the schedule has a next or a
+	// first run.
+	NextRun *Timestamp `json:"next_run"`
+	LastRun *Timestamp `json:"last_run"`
 }
 
 // CreateBackupScheduleRequest is the body of POST /backups/schedules.

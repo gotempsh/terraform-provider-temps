@@ -4,41 +4,9 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"strconv"
-	"time"
 )
-
-// Timestamp is a time Temps returns as RFC 3339 text (servers from
-// 2026-11-25 on) or as milliseconds since the epoch (earlier releases). It
-// holds the RFC 3339 form either way.
-type Timestamp string
-
-// UnmarshalJSON accepts an RFC 3339 string or epoch milliseconds.
-func (t *Timestamp) UnmarshalJSON(b []byte) error {
-	b = bytes.TrimSpace(b)
-	if string(b) == "null" {
-		return nil
-	}
-	if len(b) > 0 && b[0] == '"' {
-		var s string
-		if err := json.Unmarshal(b, &s); err != nil {
-			return err
-		}
-		*t = Timestamp(s)
-		return nil
-	}
-	ms, err := strconv.ParseInt(string(b), 10, 64)
-	if err != nil {
-		return fmt.Errorf("timestamp %s is neither RFC 3339 text nor epoch milliseconds", b)
-	}
-	*t = Timestamp(time.UnixMilli(ms).UTC().Format(time.RFC3339Nano))
-	return nil
-}
 
 // DeployImageRequest is the body of
 // POST /projects/{id}/environments/{env}/deploy/image.

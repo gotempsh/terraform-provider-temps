@@ -51,22 +51,22 @@ func (c *Client) CreateProjectSecret(ctx context.Context, projectID int64, req P
 	return &s, c.do(ctx, http.MethodPost, idPath("/projects/%d/secrets", projectID), nil, req, &s)
 }
 
-// GetProjectSecret finds a secret in the project's list: Temps has no
-// single-secret GET.
+// GetProjectSecret finds a secret in the project's list, reading every page.
+// Servers from 2026-11-25 on page the list and also have a single-secret
+// GET; earlier releases send the whole list as an array and have none, so
+// the list is read on every version.
 func (c *Client) GetProjectSecret(ctx context.Context, projectID, id int64) (*ProjectSecret, error) {
-	// A missing project lists as empty rather than 404, which reads the
+	// A missing project may list as empty rather than 404, which reads the
 	// same as a deleted secret: both remove it from state.
-	var list []ProjectSecret
 	p := idPath("/projects/%d/secrets", projectID)
-	if err := c.do(ctx, http.MethodGet, p, nil, nil, &list); err != nil {
+	s, err := findInList(ctx, c, p, nil, func(s *ProjectSecret) bool { return s.ID == id })
+	if err != nil {
 		return nil, err
 	}
-	for i := range list {
-		if list[i].ID == id {
-			return &list[i], nil
-		}
+	if s == nil {
+		return nil, notFoundError(p, fmt.Sprintf("Secret %d not found in project %d", id, projectID))
 	}
-	return nil, notFoundError(p, fmt.Sprintf("Secret %d not found in project %d", id, projectID))
+	return s, nil
 }
 
 // UpdateProjectSecret replaces a secret's scope, and its value when given.

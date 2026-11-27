@@ -40,6 +40,11 @@ type moreFake struct {
 	services  map[string]map[string]any
 	vaults    map[string]map[string]any
 	links     []map[string]any
+	funnels   map[int64]map[string]any
+	// funnelList is how the funnel list answers: "" a page (Temps from
+	// 2026-11-25 on), "array" the whole list (released servers up to
+	// v0.1.0-beta.63), anything else that JSON object.
+	funnelList string
 
 	requests []string // "METHOD path[?query]"
 	bodies   map[string]map[string]any
@@ -63,6 +68,7 @@ func newMoreFake(t *testing.T) *moreFake {
 		goals: map[int64]map[string]any{}, filters: map[int64]map[string]any{},
 		settings: map[int64]map[string]any{}, services: map[string]map[string]any{},
 		vaults: map[string]map[string]any{}, bodies: map[string]map[string]any{},
+		funnels: map[int64]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	h := func(pattern string, fn func(w http.ResponseWriter, r *http.Request, body map[string]any)) {

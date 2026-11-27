@@ -51,10 +51,3 @@ func TestGetDeploymentDecodesBothTimestampForms(t *testing.T) {
 		})
 	}
 }
-
-func TestTimestampRejectsOtherJSON(t *testing.T) {
-	var ts Timestamp
-	if err := ts.UnmarshalJSON([]byte(`true`)); err == nil {
-		t.Fatalf("decoded true as %q, want an error", ts)
-	}
-}

@@ -186,6 +186,10 @@ type gspec struct {
 	List    bool
 	ListKey string
 	Paged   bool
+	// LegacyArray: servers before 2026-11-25 answered with the whole list as
+	// a bare array instead of a page. Either is accepted, and an answer that
+	// is neither fails instead of reading as an empty list.
+	LegacyArray bool
 	// Update with no Method makes every argument force replacement.
 	Update gop
 	// Delete with no Method only forgets the resource.
@@ -1119,12 +1123,9 @@ func (r *genericResource) readObject(ctx context.Context, v gvals, id string) (m
 		if err != nil {
 			return nil, err
 		}
-		var items []any
-		if s.ListKey == "" {
-			items, _ = raw.([]any)
-		} else if obj := unwrap(raw, s.Read.Envelope); obj != nil {
-			got, _ := getPath(obj, s.ListKey)
-			items, _ = got.([]any)
+		items, whole, err := s.listItems(raw)
+		if err != nil {
+			return nil, fmt.Errorf("GET %s: %w", p, err)
 		}
 		for _, it := range items {
 			obj := asObject(it)
@@ -1135,11 +1136,33 @@ func (r *genericResource) readObject(ctx context.Context, v gvals, id string) (m
 				return obj, nil
 			}
 		}
-		if !s.Paged || len(items) < pageSize {
+		if whole || !s.Paged || len(items) < pageSize {
 			return nil, nil
 		}
 	}
 	return nil, nil
+}
+
+// listItems is the items of one answer from the list at Read. whole reports
+// a LegacyArray answer, which is the whole list whatever page was asked for.
+func (s *gspec) listItems(raw any) (items []any, whole bool, err error) {
+	if s.LegacyArray {
+		if arr, ok := raw.([]any); ok {
+			return arr, true, nil
+		}
+		got, _ := getPath(unwrap(raw, s.Read.Envelope), s.ListKey)
+		if arr, ok := got.([]any); ok {
+			return arr, false, nil
+		}
+		return nil, false, fmt.Errorf("the response is neither a list nor a page with %q", s.ListKey)
+	}
+	if s.ListKey == "" {
+		items, _ = raw.([]any)
+	} else if obj := unwrap(raw, s.Read.Envelope); obj != nil {
+		got, _ := getPath(obj, s.ListKey)
+		items, _ = got.([]any)
+	}
+	return items, false, nil
 }
 
 func (r *genericResource) write(ctx context.Context, o gop, v, prior gvals, id string, create bool, diags *diag.Diagnostics) (map[string]any, bool) {
